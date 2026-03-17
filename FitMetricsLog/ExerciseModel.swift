@@ -3,6 +3,7 @@
 //  FlexCore
 //
 //  ⚠️  Color(hex:) defined ONLY here.
+
 //  ⚠️  Exercise / ExerciseStore defined ONLY here.
 //
 //  v5: muscleGroups is now [MuscleGroup] (multi-select support)
@@ -10,16 +11,19 @@
 //
 
 import SwiftUI
+import UIKit
 import Combine
 
 // MARK: - MuscleGroup (struct — supports built-in + custom)
 struct MuscleGroup: Identifiable, Codable, Hashable {
-    var id:       String
-    var rawValue: String
-    var icon:     String
-    var colorHex: String
+    var id:        String
+    var rawValue:  String
+    var icon:      String
+    var colorHex:  String
+    var imageData: Data? = nil     // optional cover photo
 
-    var color: Color { Color(hex: colorHex) }
+    var color: Color   { Color(hex: colorHex) }
+    var image: UIImage? { imageData.flatMap { UIImage(data: $0) } }
 
     static func == (lhs: MuscleGroup, rhs: MuscleGroup) -> Bool { lhs.id == rhs.id }
     func hash(into hasher: inout Hasher) { hasher.combine(id) }
@@ -61,6 +65,14 @@ struct Exercise: Identifiable, Codable {
         case intermediate = "Intermediate"
         case advanced     = "Advanced"
 
+        var localizedLabel: String {
+            switch self {
+            case .beginner:     return L(.beginner)
+            case .intermediate: return L(.intermediate)
+            case .advanced:     return L(.advanced)
+            }
+        }
+
         var color: Color {
             switch self {
             case .beginner:     return .green
@@ -95,6 +107,7 @@ class ExerciseStore: ObservableObject {
     func delete(_ e: Exercise)         { exercises.removeAll { $0.id == e.id }; save() }
     func deleteExercise(_ e: Exercise) { delete(e) }
     func delete(at offsets: IndexSet)  { exercises.remove(atOffsets: offsets); save() }
+    func clearAll() { exercises = []; save() }
 
     func exercises(for group: MuscleGroup) -> [Exercise] {
         exercises.filter { $0.muscleGroups.contains(group) }

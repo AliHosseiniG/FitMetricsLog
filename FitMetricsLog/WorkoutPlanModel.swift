@@ -61,6 +61,7 @@ class WorkoutPlanStore: ObservableObject {
     }
 
     func delete(_ p: WorkoutPlan) { plans.removeAll { $0.id == p.id }; save() }
+    func clearAll() { plans = []; save() }
 
     /// Called when an exercise is renamed — update matching items in all plans
     func syncExerciseName(id: UUID, newName: String) {

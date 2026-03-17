@@ -4,6 +4,7 @@
 //
 
 import SwiftUI
+import UIKit
 import Combine
 
 // MARK: - WorkoutSet
@@ -17,23 +18,31 @@ struct WorkoutSet: Identifiable, Codable {
 
 // MARK: - WorkoutLog
 struct WorkoutLog: Identifiable, Codable {
-    var id:           UUID
-    var exerciseId:   UUID
-    var exerciseName: String
-    var muscleGroup:  MuscleGroup
-    var date:         Date
-    var sets:         [WorkoutSet]
-    var notes:        String = ""
+    var id:               UUID
+    var exerciseId:       UUID
+    var exerciseName:     String
+    var muscleGroup:      MuscleGroup
+    var date:             Date
+    var sets:             [WorkoutSet]
+    var notes:            String = ""
+    var isCompleted:       Bool   = false   // checkbox state
+    var exerciseImageData: Data? = nil     // snapshot of exercise photo (first)
+    var exerciseImageDatas: [Data] = []    // all exercise photos
 
     init(exerciseId: UUID, exerciseName: String,
-         muscleGroup: MuscleGroup, date: Date, sets: [WorkoutSet]) {
-        self.id           = UUID()
-        self.exerciseId   = exerciseId
-        self.exerciseName = exerciseName
-        self.muscleGroup  = muscleGroup
-        self.date         = date
-        self.sets         = sets
+         muscleGroup: MuscleGroup, date: Date, sets: [WorkoutSet],
+         exerciseImageData: Data? = nil, exerciseImageDatas: [Data] = []) {
+        self.id                  = UUID()
+        self.exerciseId          = exerciseId
+        self.exerciseName        = exerciseName
+        self.muscleGroup         = muscleGroup
+        self.date                = date
+        self.sets                = sets
+        self.exerciseImageData   = exerciseImageData
+        self.exerciseImageDatas  = exerciseImageDatas.isEmpty ? (exerciseImageData.map { [$0] } ?? []) : exerciseImageDatas
     }
+
+    var allImages: [UIImage] { exerciseImageDatas.compactMap { UIImage(data: $0) } }
 
     var totalVolume:        Double { sets.reduce(0) { $0 + $1.weight * Double($1.reps) } }
     var maxWeight:          Double { sets.map(\.weight).max() ?? 0 }
@@ -58,7 +67,10 @@ struct WorkoutSession: Identifiable, Codable {
     var sourcePlanName:   String? = nil
 
     var totalVolume:  Double         { logs.reduce(0) { $0 + $1.totalVolume } }
-    var muscleGroups: [MuscleGroup]  { Array(Set(logs.map(\.muscleGroup))) }
+    var muscleGroups: [MuscleGroup] {
+        let raw = Array(Set(logs.map(\.muscleGroup)))
+        return raw.map { MuscleGroupManager.shared.liveGroup(for: $0.id) ?? $0 }
+    }
 }
 
 // MARK: - MuscleGroupStat
@@ -124,6 +136,34 @@ class WorkoutLogStore: ObservableObject {
         if let i = sessions.firstIndex(where: { $0.id == s.id }) { sessions[i] = s; save() }
     }
     func deleteSession(_ s: WorkoutSession) { sessions.removeAll { $0.id == s.id }; save() }
+    func clearAll() { sessions = []; save() }
+
+    /// Resize exercise images in existing log entries (fixes large images from before)
+    /// Safe — only shrinks, never deletes, never changes sets/weights/dates
+    func resizeStoredImages(maxDimension: CGFloat = 600) {
+        var changed = false
+        for si in sessions.indices {
+            for li in sessions[si].logs.indices {
+                let log = sessions[si].logs[li]
+                let newDatas: [Data] = log.exerciseImageDatas.map { data in
+                    guard let img = UIImage(data: data) else { return data }
+                    let sz = img.size
+                    let scale = min(maxDimension / sz.width, maxDimension / sz.height, 1.0)
+                    if scale >= 1.0 { return data }
+                    let newSz = CGSize(width: sz.width * scale, height: sz.height * scale)
+                    let renderer = UIGraphicsImageRenderer(size: newSz)
+                    let resized = renderer.image { _ in img.draw(in: CGRect(origin: .zero, size: newSz)) }
+                    return resized.jpegData(compressionQuality: 0.75) ?? data
+                }
+                if newDatas != log.exerciseImageDatas {
+                    sessions[si].logs[li].exerciseImageDatas = newDatas
+                    sessions[si].logs[li].exerciseImageData  = newDatas.first
+                    changed = true
+                }
+            }
+        }
+        if changed { save() }
+    }
 
     // MARK: Analytics
 

@@ -7,11 +7,15 @@ import SwiftUI
 
 // MARK: - Log Tab Root
 struct LogView: View {
+    @ObservedObject private var loc = LocalizationManager.shared
     @EnvironmentObject var logStore:      WorkoutLogStore
     @EnvironmentObject var exerciseStore: ExerciseStore
     @EnvironmentObject var planStore:     WorkoutPlanStore
-    @State private var showingNew    = false
-    @State private var showingExport = false
+    @State private var showingNew      = false
+    @State private var showingExport   = false
+    @State private var isSelecting     = false
+    @State private var selectedIDs     = Set<UUID>()
+    @State private var showDeleteAlert = false
 
     var body: some View {
         NavigationView {
@@ -20,20 +24,53 @@ struct LogView: View {
                 VStack(spacing: 0) {
                     HStack {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("Workout Log")
+                            Text(L(.workoutLog))
                                 .font(.system(size: 26, weight: .bold)).foregroundColor(.white)
-                            Text("\(logStore.sessions.count) sessions")
-                                .font(.system(size: 13)).foregroundColor(.gray)
+                            Text(isSelecting && !selectedIDs.isEmpty
+                                 ? "\(selectedIDs.count) " + L(.sessions)
+                                 : "\(logStore.sessions.count) " + L(.sessions))
+                                .font(.system(size: 13))
+                                .foregroundColor(isSelecting && !selectedIDs.isEmpty ? .orange : .gray)
+                                .animation(.easeInOut(duration: 0.2), value: selectedIDs.count)
                         }
                         Spacer()
                         HStack(spacing: 12) {
-                            Button(action: { showingExport = true }) {
-                                Image(systemName: "square.and.arrow.up")
-                                    .font(.system(size: 22)).foregroundColor(.orange)
-                            }
-                            Button(action: { showingNew = true }) {
-                                Image(systemName: "plus.circle.fill")
-                                    .font(.system(size: 28)).foregroundColor(.orange)
+                            if isSelecting {
+                                // Select All / Deselect All
+                                Button(action: {
+                                    if selectedIDs.count == logStore.sessions.count {
+                                        selectedIDs.removeAll()
+                                    } else {
+                                        selectedIDs = Set(logStore.sessions.map(\.id))
+                                    }
+                                }) {
+                                    Text(selectedIDs.count == logStore.sessions.count ? L(.deselectAll) : L(.selectAll))
+                                        .font(.system(size: 13)).foregroundColor(.orange)
+                                }
+                                // Delete selected
+                                Button(action: { if !selectedIDs.isEmpty { showDeleteAlert = true } }) {
+                                    Image(systemName: "trash.fill")
+                                        .font(.system(size: 18))
+                                        .foregroundColor(selectedIDs.isEmpty ? .gray : .red)
+                                }
+                                .disabled(selectedIDs.isEmpty)
+                                // Done
+                                Button(action: { withAnimation { isSelecting = false; selectedIDs.removeAll() } }) {
+                                    Text("Done").font(.system(size: 15, weight: .semibold)).foregroundColor(.orange)
+                                }
+                            } else {
+                                Button(action: { showingExport = true }) {
+                                    Image(systemName: "square.and.arrow.up")
+                                        .font(.system(size: 22)).foregroundColor(.orange)
+                                }
+                                Button(action: { withAnimation { isSelecting = true } }) {
+                                    Image(systemName: "checkmark.circle")
+                                        .font(.system(size: 22)).foregroundColor(.orange)
+                                }
+                                Button(action: { showingNew = true }) {
+                                    Image(systemName: "plus.circle.fill")
+                                        .font(.system(size: 28)).foregroundColor(.orange)
+                                }
                             }
                         }
                     }
@@ -44,10 +81,23 @@ struct LogView: View {
                     } else {
                         ScrollView(showsIndicators: false) {
                             LazyVStack(spacing: 14) {
-                                ForEach(logStore.sessions) { session in
-                                    NavigationLink(destination: SessionDetailView(session: session)) {
-                                        SessionRowCard(session: session)
-                                    }.padding(.horizontal, 20)
+                                ForEach(logStore.sessions.sorted { $0.date > $1.date }) { session in
+                                    if isSelecting {
+                                        // Selectable row
+                                        Button(action: { toggleSession(session.id) }) {
+                                            HStack(spacing: 12) {
+                                                Image(systemName: selectedIDs.contains(session.id)
+                                                      ? "checkmark.circle.fill" : "circle")
+                                                    .font(.system(size: 22))
+                                                    .foregroundColor(selectedIDs.contains(session.id) ? .orange : .gray.opacity(0.5))
+                                                SessionRowCard(session: session)
+                                            }
+                                        }.padding(.horizontal, 20)
+                                    } else {
+                                        NavigationLink(destination: SessionDetailView(session: session)) {
+                                            SessionRowCard(session: session)
+                                        }.padding(.horizontal, 20)
+                                    }
                                 }
                                 Spacer(minLength: 100)
                             }
@@ -63,10 +113,31 @@ struct LogView: View {
                     .environmentObject(planStore)
             }
             .sheet(isPresented: $showingExport) {
-                ExportView()
-                    .environmentObject(logStore)
+                ExportView().environmentObject(logStore)
+            }
+            .alert("Delete \(selectedIDs.count) Session\(selectedIDs.count == 1 ? "" : "s")?",
+                   isPresented: $showDeleteAlert) {
+                Button(L(.delete), role: .destructive) { deleteSelected() }
+                Button(L(.cancel), role: .cancel) {}
+            } message: {
+                Text(L(.cannotUndo))
             }
         }
+    }
+
+    func toggleSession(_ id: UUID) {
+        if selectedIDs.contains(id) { selectedIDs.remove(id) }
+        else { selectedIDs.insert(id) }
+    }
+
+    func deleteSelected() {
+        for id in selectedIDs {
+            if let s = logStore.sessions.first(where: { $0.id == id }) {
+                logStore.deleteSession(s)
+            }
+        }
+        selectedIDs.removeAll()
+        isSelecting = false
     }
 
     var emptyState: some View {
@@ -74,12 +145,12 @@ struct LogView: View {
             Spacer()
             Image(systemName: "calendar.badge.plus")
                 .font(.system(size: 60)).foregroundColor(.gray.opacity(0.4))
-            Text("No sessions yet")
+            Text(L(.noLogsYet))
                 .font(.system(size: 20, weight: .semibold)).foregroundColor(.white)
-            Text("Tap + to log your first workout")
+            Text(L(.tapToLog))
                 .font(.system(size: 14)).foregroundColor(.gray)
             Button(action: { showingNew = true }) {
-                Label("Log Session", systemImage: "plus")
+                Label(L(.logSession), systemImage: "plus")
                     .font(.system(size: 15, weight: .semibold)).foregroundColor(.white)
                     .padding(.horizontal, 28).padding(.vertical, 14)
                     .background(Color.orange).cornerRadius(24)
@@ -98,6 +169,8 @@ struct SessionRowCard: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(session.date.formatted(date: .complete, time: .omitted))
                         .font(.system(size: 14, weight: .semibold)).foregroundColor(.white)
+                    Text(session.date.formatted(date: .omitted, time: .shortened))
+                        .font(.system(size: 11)).foregroundColor(.gray.opacity(0.7))
                     if let planName = session.sourcePlanName {
                         Label(planName, systemImage: "list.bullet.clipboard")
                             .font(.system(size: 11, weight: .medium)).foregroundColor(.orange)
@@ -115,13 +188,14 @@ struct SessionRowCard: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 7) {
                     ForEach(session.muscleGroups, id: \.self) { g in
+                        let lg = MuscleGroupManager.shared.liveGroup(for: g.id) ?? g
                         HStack(spacing: 4) {
-                            Image(systemName: g.icon).font(.system(size: 10))
-                            Text(g.rawValue).font(.system(size: 10, weight: .medium))
+                            Image(systemName: lg.icon).font(.system(size: 10))
+                            Text(lg.rawValue).font(.system(size: 10, weight: .medium))
                         }
-                        .foregroundColor(g.color)
+                        .foregroundColor(lg.color)
                         .padding(.horizontal, 9).padding(.vertical, 4)
-                        .background(g.color.opacity(0.14)).cornerRadius(8)
+                        .background(lg.color.opacity(0.14)).cornerRadius(8)
                     }
                 }
             }
@@ -147,17 +221,32 @@ struct LogMiniStat: View {
 
 // MARK: - Session Detail (with Edit button)
 struct SessionDetailView: View {
+    @ObservedObject private var loc = LocalizationManager.shared
     @EnvironmentObject var logStore:      WorkoutLogStore
     @EnvironmentObject var exerciseStore: ExerciseStore
     @EnvironmentObject var planStore:     WorkoutPlanStore
     @Environment(\.dismiss) var dismiss
 
     let session: WorkoutSession
-    @State private var showingDelete = false
-    @State private var showingEdit   = false
+    @State private var showingDelete  = false
+    @State private var showingEdit    = false
+    @State private var isReordering   = false
 
     var live: WorkoutSession {
         logStore.sessions.first { $0.id == session.id } ?? session
+    }
+
+    func toggleCompleted(log: WorkoutLog) {
+        guard var s = logStore.sessions.first(where: { $0.id == session.id }),
+              let li = s.logs.firstIndex(where: { $0.id == log.id }) else { return }
+        s.logs[li].isCompleted.toggle()
+        logStore.updateSession(s)
+    }
+
+    func moveLogs(from: IndexSet, to: Int) {
+        guard var s = logStore.sessions.first(where: { $0.id == session.id }) else { return }
+        s.logs.move(fromOffsets: from, toOffset: to)
+        logStore.updateSession(s)
     }
 
     var body: some View {
@@ -177,10 +266,10 @@ struct SessionDetailView: View {
                             .font(.system(size: 16, weight: .semibold)).foregroundColor(.white)
                         Spacer()
                         Menu {
-                            Button("Edit Session", systemImage: "pencil") { showingEdit = true }
-                            Button("Duplicate Session", systemImage: "doc.on.doc") { duplicateSession() }
+                            Button(L(.editSession), systemImage: "pencil") { showingEdit = true }
+                            Button(L(.duplicateSession), systemImage: "doc.on.doc") { duplicateSession() }
                             Divider()
-                            Button("Delete", systemImage: "trash", role: .destructive) { showingDelete = true }
+                            Button(L(.delete), systemImage: "trash", role: .destructive) { showingDelete = true }
                         } label: {
                             Image(systemName: "ellipsis")
                                 .font(.system(size: 15)).foregroundColor(.white)
@@ -203,12 +292,53 @@ struct SessionDetailView: View {
                     .background(Color(hex: "1C1C1E")).cornerRadius(14)
                     .padding(.horizontal, 20)
 
-                    ForEach(live.logs) { log in
-                        ExLogCard(log: log).padding(.horizontal, 20)
+                    // Reorder button
+                    HStack {
+                        Spacer()
+                        Button(action: { withAnimation { isReordering.toggle() } }) {
+                            Label(isReordering ? "Done" : "Reorder",
+                                  systemImage: isReordering ? "checkmark" : "arrow.up.arrow.down")
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundColor(.orange)
+                        }
+                    }.padding(.horizontal, 20)
+
+                    if isReordering {
+                        List {
+                            ForEach(live.logs) { log in
+                                HStack(spacing: 10) {
+                                    Image(systemName: "line.3.horizontal")
+                                        .foregroundColor(.gray)
+                                    Text(log.exerciseName)
+                                        .font(.system(size: 13, weight: .medium)).foregroundColor(.white)
+                                    Spacer()
+                                }
+                                .padding(.vertical, 6)
+                                .listRowBackground(Color(hex: "1C1C1E"))
+                                .listRowSeparatorTint(Color.white.opacity(0.07))
+                            }
+                            .onMove(perform: moveLogs)
+                        }
+                        .listStyle(.plain)
+                        .scrollContentBackground(.hidden)
+                        .frame(height: CGFloat(live.logs.count) * 52)
+                        .environment(\.editMode, .constant(.active))
+                        .background(Color(hex: "1C1C1E")).cornerRadius(12)
+                        .padding(.horizontal, 20)
+                    } else {
+                        ForEach(live.logs) { log in
+                            ExLogCard(log: log, onToggleComplete: { toggleCompleted(log: log) })
+                                .padding(.horizontal, 20)
+                                .background(
+                                    log.isCompleted
+                                        ? Color.green.opacity(0.06).cornerRadius(14)
+                                        : Color.clear.cornerRadius(14)
+                                )
+                        }
                     }
                     if !live.sessionNotes.isEmpty {
                         VStack(alignment: .leading, spacing: 6) {
-                            Text("Notes").font(.system(size: 14, weight: .semibold)).foregroundColor(.gray)
+                            Text(L(.notes)).font(.system(size: 14, weight: .semibold)).foregroundColor(.gray)
                             Text(live.sessionNotes).font(.system(size: 13)).foregroundColor(.white)
                         }.padding(.horizontal, 20)
                     }
@@ -223,9 +353,9 @@ struct SessionDetailView: View {
                 .environmentObject(exerciseStore)
                 .environmentObject(planStore)
         }
-        .alert("Delete Session", isPresented: $showingDelete) {
-            Button("Delete", role: .destructive) { logStore.deleteSession(session); dismiss() }
-            Button("Cancel", role: .cancel) {}
+        .alert(L(.deleteSession), isPresented: $showingDelete) {
+            Button(L(.delete), role: .destructive) { logStore.deleteSession(session); dismiss() }
+            Button(L(.cancel), role: .cancel) {}
         }
     }
 
@@ -255,25 +385,47 @@ struct SessCell: View {
 
 struct ExLogCard: View {
     let log: WorkoutLog
+    var onToggleComplete: (() -> Void)? = nil
     var body: some View {
+        let liveG = MuscleGroupManager.shared.liveGroup(for: log.muscleGroup.id) ?? log.muscleGroup
         VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Image(systemName: log.muscleGroup.icon)
-                    .font(.system(size: 15)).foregroundColor(log.muscleGroup.color)
-                    .frame(width: 34, height: 34)
-                    .background(log.muscleGroup.color.opacity(0.15)).cornerRadius(9)
+            HStack(spacing: 10) {
+                // Exercise photo or icon
+                ZStack {
+                    RoundedRectangle(cornerRadius: 9)
+                        .fill(liveG.color.opacity(0.15))
+                        .frame(width: 44, height: 44)
+                    if let data = log.exerciseImageData, let img = UIImage(data: data) {
+                        Image(uiImage: img).resizable().scaledToFill()
+                            .frame(width: 44, height: 44).clipped().cornerRadius(9)
+                    } else {
+                        Image(systemName: liveG.icon)
+                            .font(.system(size: 18)).foregroundColor(liveG.color)
+                    }
+                }
                 VStack(alignment: .leading, spacing: 2) {
                     Text(log.exerciseName)
-                        .font(.system(size: 14, weight: .semibold)).foregroundColor(.white)
-                    Text(log.muscleGroup.rawValue)
-                        .font(.system(size: 11)).foregroundColor(log.muscleGroup.color)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(log.isCompleted ? .gray : .white)
+                        .strikethrough(log.isCompleted, color: .gray)
+                    Text(liveG.rawValue)
+                        .font(.system(size: 11)).foregroundColor(liveG.color)
                 }
                 Spacer()
                 VStack(alignment: .trailing, spacing: 2) {
                     Text("\(Int(log.maxWeight)) kg max")
-                        .font(.system(size: 12, weight: .semibold)).foregroundColor(.white)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(log.isCompleted ? .gray : .white)
                     Text("\(Int(log.totalVolume)) kg vol")
                         .font(.system(size: 11)).foregroundColor(.gray)
+                }
+                // Checkbox
+                if onToggleComplete != nil {
+                    Button(action: { onToggleComplete?() }) {
+                        Image(systemName: log.isCompleted ? "checkmark.circle.fill" : "circle")
+                            .font(.system(size: 24))
+                            .foregroundColor(log.isCompleted ? .green : .gray.opacity(0.5))
+                    }
                 }
             }
             HStack {
@@ -301,6 +453,19 @@ struct ExLogCard: View {
                 Text("Est. 1RM: \(Int(log.estimatedOneRepMax)) kg")
                     .font(.system(size: 11)).foregroundColor(.gray)
             }
+            // Exercise images gallery (all photos)
+            let allImgs = log.allImages
+            if !allImgs.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(Array(allImgs.enumerated()), id: \.offset) { _, img in
+                            Image(uiImage: img).resizable().scaledToFill()
+                                .frame(width: allImgs.count == 1 ? 220 : 120, height: 90)
+                                .clipped().cornerRadius(10)
+                        }
+                    }
+                }.padding(.top, 4)
+            }
         }
         .padding(14).background(Color(hex: "1C1C1E")).cornerRadius(14)
     }
@@ -308,6 +473,7 @@ struct ExLogCard: View {
 
 // MARK: - New / Edit Session
 struct NewSessionView: View {
+    @ObservedObject private var loc = LocalizationManager.shared
     @EnvironmentObject var logStore:      WorkoutLogStore
     @EnvironmentObject var exerciseStore: ExerciseStore
     @EnvironmentObject var planStore:     WorkoutPlanStore
@@ -335,19 +501,20 @@ struct NewSessionView: View {
 
                 ScrollView(showsIndicators: false) {
                     VStack(spacing: 16) {
-                        // Date
+                        // Date & Time
                         HStack {
-                            Label("Date", systemImage: "calendar")
+                            Label(L(.tabLog) + " · " + "Zeit", systemImage: "calendar.clock")
                                 .foregroundColor(.gray).font(.system(size: 14))
                             Spacer()
-                            DatePicker("", selection: $sessionDate, displayedComponents: .date)
+                            DatePicker("", selection: $sessionDate,
+                                       displayedComponents: [.date, .hourAndMinute])
                                 .colorScheme(.dark).labelsHidden()
                         }
                         .padding(14).background(Color(hex: "1C1C1E")).cornerRadius(12)
 
                         // Duration
                         HStack {
-                            Label("Duration", systemImage: "clock")
+                            Label(L(.duration), systemImage: "clock")
                                 .foregroundColor(.gray).font(.system(size: 14))
                             Spacer()
                             HStack(spacing: 14) {
@@ -369,7 +536,7 @@ struct NewSessionView: View {
                             Button(action: { showingPlanPicker = true }) {
                                 HStack {
                                     Image(systemName: "list.bullet.clipboard.fill").foregroundColor(.orange)
-                                    Text("Load from Program")
+                                    Text(L(.loadFromProgram))
                                         .font(.system(size: 14, weight: .medium)).foregroundColor(.orange)
                                     Spacer()
                                     Image(systemName: "chevron.right")
@@ -382,7 +549,7 @@ struct NewSessionView: View {
                         // Exercises
                         VStack(alignment: .leading, spacing: 10) {
                             HStack {
-                                Text("Exercises")
+                                Text(L(.exercises))
                                     .font(.system(size: 17, weight: .bold)).foregroundColor(.white)
                                 Spacer()
                                 if !entries.isEmpty {
@@ -395,7 +562,7 @@ struct NewSessionView: View {
                             Button(action: { showingExPicker = true }) {
                                 HStack {
                                     Image(systemName: "plus.circle.fill").foregroundColor(.orange)
-                                    Text("Add Exercise")
+                                    Text(L(.addExercise))
                                         .font(.system(size: 14, weight: .medium)).foregroundColor(.orange)
                                 }
                                 .frame(maxWidth: .infinity).frame(height: 46)
@@ -408,10 +575,10 @@ struct NewSessionView: View {
 
                         // Notes
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("Notes").font(.system(size: 13)).foregroundColor(.gray)
+                            Text(L(.notes)).font(.system(size: 13)).foregroundColor(.gray)
                             ZStack(alignment: .topLeading) {
                                 if sessionNotes.isEmpty {
-                                    Text("Optional notes...").foregroundColor(.gray.opacity(0.5))
+                                    Text(L(.notes) + "...").foregroundColor(.gray.opacity(0.5))
                                         .font(.system(size: 14)).padding(14)
                                 }
                                 TextEditor(text: $sessionNotes)
@@ -424,7 +591,7 @@ struct NewSessionView: View {
 
                         // Save
                         Button(action: save) {
-                            Text(isEditing ? "Update Session" : "Save Session")
+                            Text(isEditing ? L(.editSession) : L(.newSession))
                                 .font(.system(size: 17, weight: .semibold)).foregroundColor(.white)
                                 .frame(maxWidth: .infinity).frame(height: 54)
                                 .background(LinearGradient(colors: [.orange, .orange.opacity(0.8)],
@@ -438,9 +605,9 @@ struct NewSessionView: View {
                     .padding(.horizontal, 20).padding(.top, 8)
                 }
             }
-            .navigationTitle(isEditing ? "Edit Session" : "Log Workout")
+            .navigationTitle(isEditing ? L(.editSession) : L(.logSession))
             .navigationBarTitleDisplayMode(.inline)
-            .navigationBarItems(leading: Button("Cancel") { dismiss() }.foregroundColor(.orange))
+            .navigationBarItems(leading: Button(L(.cancel)) { dismiss() }.foregroundColor(.orange))
             .sheet(isPresented: $showingExPicker) {
                 LogExercisePickerView(exercises: exerciseStore.exercises) { ex in
                     entries.append(DraftLog(exercise: ex))
@@ -471,14 +638,30 @@ struct NewSessionView: View {
         }
     }
 
+    // Resize image data to max dimension for display in log
+    func resizedData(_ data: Data, maxDimension: CGFloat = 600) -> Data {
+        guard let img = UIImage(data: data) else { return data }
+        let size = img.size
+        let scale = min(maxDimension / size.width, maxDimension / size.height, 1.0)
+        if scale >= 1.0 { return data }
+        let newSize = CGSize(width: size.width * scale, height: size.height * scale)
+        let renderer = UIGraphicsImageRenderer(size: newSize)
+        let resized = renderer.image { _ in img.draw(in: CGRect(origin: .zero, size: newSize)) }
+        return resized.jpegData(compressionQuality: 0.75) ?? data
+    }
+
     func save() {
         let logs: [WorkoutLog] = entries.compactMap { d in
             guard !d.sets.isEmpty else { return nil }
+            let ex = exerciseStore.exercises.first { $0.id == d.exerciseId }
+            let imgDatas = (ex?.imageDatas ?? []).map { resizedData($0, maxDimension: 600) }
             return WorkoutLog(exerciseId: d.exerciseId, exerciseName: d.exerciseName,
                               muscleGroup: d.muscleGroup, date: sessionDate,
                               sets: d.sets.enumerated().map { i, s in
                                   WorkoutSet(setNumber: i+1, weight: s.weight, reps: s.reps)
-                              })
+                              },
+                              exerciseImageData: imgDatas.first,
+                              exerciseImageDatas: imgDatas)
         }
         guard !logs.isEmpty else { dismiss(); return }
         if var e = existingSession {
@@ -523,6 +706,7 @@ struct DraftSet: Identifiable {
 
 // MARK: - Draft Log Card (keyboard dismiss on tap)
 struct DraftLogCard: View {
+    @ObservedObject private var loc = LocalizationManager.shared
     @Binding var entry: DraftLog
     var onDelete: () -> Void
     @FocusState private var wFocused: Bool
@@ -653,9 +837,9 @@ struct LogExercisePickerView: View {
                     .listStyle(.plain).scrollContentBackground(.hidden)
                 }
             }
-            .navigationTitle("Add Exercise")
+            .navigationTitle(L(.addExercise))
             .navigationBarTitleDisplayMode(.inline)
-            .navigationBarItems(leading: Button("Cancel") { dismiss() }.foregroundColor(.orange))
+            .navigationBarItems(leading: Button(L(.cancel)) { dismiss() }.foregroundColor(.orange))
         }
         .preferredColorScheme(.dark)
     }
@@ -701,7 +885,7 @@ struct LogPlanPickerView: View {
             }
             .navigationTitle("Load Exercises")
             .navigationBarTitleDisplayMode(.inline)
-            .navigationBarItems(leading: Button("Cancel") { dismiss() }.foregroundColor(.orange))
+            .navigationBarItems(leading: Button(L(.cancel)) { dismiss() }.foregroundColor(.orange))
         }
         .preferredColorScheme(.dark)
         .onAppear { buildGenericItems() }
@@ -830,23 +1014,32 @@ struct LogPlanPickerView: View {
 // MARK: - Export View
 struct ExportView: View {
     @EnvironmentObject var logStore: WorkoutLogStore
+    @ObservedObject private var loc = LocalizationManager.shared
     @Environment(\.dismiss) var dismiss
 
-    @State private var selectedIDs = Set<UUID>()   // empty = select all
-    @State private var selectAll   = true
     @State private var format: ExportFormat = .csv
-    @State private var shareItem:  Any? = nil
-    @State private var showShare   = false
-    @State private var isGenerating = false
+    @State private var exportAll  = true
+    @State private var selectedIDs = Set<UUID>()
+    @State private var shareURL: URL? = nil
+    @State private var showShare  = false
+    @State private var isWorking  = false
 
     enum ExportFormat: String, CaseIterable {
         case csv  = "CSV"
         case pdf  = "PDF"
+        case json = "JSON"
+        var icon: String {
+            switch self {
+            case .csv:  return "tablecells"
+            case .pdf:  return "doc.richtext"
+            case .json: return "curlybraces.square"
+            }
+        }
     }
 
     var sessionsToExport: [WorkoutSession] {
-        selectAll ? logStore.sessions
-                  : logStore.sessions.filter { selectedIDs.contains($0.id) }
+        let all = logStore.sessions.sorted { $0.date > $1.date }
+        return exportAll ? all : all.filter { selectedIDs.contains($0.id) }
     }
 
     var body: some View {
@@ -854,53 +1047,48 @@ struct ExportView: View {
             ZStack {
                 Color(hex: "111111").ignoresSafeArea()
                 VStack(spacing: 0) {
-                    // Format picker
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("Export Format")
-                            .font(.system(size: 14, weight: .semibold)).foregroundColor(.gray)
-                            .padding(.horizontal, 20)
-                        HStack(spacing: 0) {
-                            ForEach(ExportFormat.allCases, id: \.self) { f in
-                                Button(action: { format = f }) {
-                                    HStack(spacing: 6) {
-                                        Image(systemName: f == .csv ? "tablecells" : "doc.richtext")
-                                        Text(f.rawValue)
-                                    }
-                                    .font(.system(size: 14, weight: format == f ? .bold : .regular))
-                                    .foregroundColor(format == f ? .black : .gray)
-                                    .frame(maxWidth: .infinity).padding(.vertical, 10)
-                                    .background(format == f ? Color.orange : Color.clear)
-                                    .cornerRadius(10)
+
+                    // ── Format selector ──
+                    HStack(spacing: 10) {
+                        ForEach(ExportFormat.allCases, id: \.self) { f in
+                            Button(action: { format = f }) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: f.icon)
+                                    Text(f.rawValue).fontWeight(.semibold)
                                 }
+                                .font(.system(size: 14))
+                                .foregroundColor(format == f ? .black : .gray)
+                                .frame(maxWidth: .infinity).padding(.vertical, 12)
+                                .background(format == f ? Color.orange : Color(hex: "2C2C2C"))
+                                .cornerRadius(12)
                             }
                         }
-                        .padding(4).background(Color(hex: "1C1C1E")).cornerRadius(14)
-                        .padding(.horizontal, 20)
                     }
-                    .padding(.vertical, 16)
+                    .padding(.horizontal, 20).padding(.top, 20).padding(.bottom, 16)
 
-                    // Select scope
-                    HStack {
-                        Text("Sessions")
-                            .font(.system(size: 14, weight: .semibold)).foregroundColor(.gray)
-                        Spacer()
-                        Button(action: { selectAll.toggle(); if selectAll { selectedIDs.removeAll() } }) {
-                            Text(selectAll ? "Select specific" : "Select all")
-                                .font(.system(size: 13)).foregroundColor(.orange)
-                        }
-                    }.padding(.horizontal, 20).padding(.bottom, 8)
+                    // ── Scope toggle ──
+                    HStack(spacing: 0) {
+                        scopeButton(label: L(.selectAll) + " (\(logStore.sessions.count))",
+                                    active: exportAll) { exportAll = true }
+                        scopeButton(label: L(.selectSessions),
+                                    active: !exportAll) { exportAll = false }
+                    }
+                    .padding(.horizontal, 20).padding(.bottom, 12)
 
-                    if !selectAll {
-                        // Session picker
-                        List(logStore.sessions) { session in
-                            Button(action: { toggle(session) }) {
-                                HStack {
-                                    checkCircle(on: selectedIDs.contains(session.id))
+                    // ── Session list (only when picking) ──
+                    if !exportAll {
+                        List(logStore.sessions.sorted { $0.date > $1.date }) { session in
+                            Button(action: { toggle(session.id) }) {
+                                HStack(spacing: 12) {
+                                    Image(systemName: selectedIDs.contains(session.id)
+                                          ? "checkmark.circle.fill" : "circle")
+                                        .font(.system(size: 22))
+                                        .foregroundColor(selectedIDs.contains(session.id) ? .orange : .gray.opacity(0.4))
                                     VStack(alignment: .leading, spacing: 3) {
-                                        Text(session.date.formatted(date: .abbreviated, time: .omitted))
-                                            .foregroundColor(.white).font(.system(size: 14))
-                                        Text("\(session.logs.count) exercises · \(Int(session.totalVolume)) kg")
-                                            .foregroundColor(.gray).font(.system(size: 11))
+                                        Text(session.date.formatted(date: .abbreviated, time: .shortened))
+                                            .font(.system(size: 14, weight: .medium)).foregroundColor(.white)
+                                        Text("\(session.logs.count) " + L(.exercises) + " · \(Int(session.totalVolume)) kg")
+                                            .font(.system(size: 11)).foregroundColor(.gray)
                                     }
                                     Spacer()
                                 }
@@ -909,89 +1097,111 @@ struct ExportView: View {
                         }
                         .listStyle(.plain).scrollContentBackground(.hidden)
                     } else {
-                        // Summary
-                        VStack(spacing: 16) {
-                            Image(systemName: "calendar.badge.checkmark")
-                                .font(.system(size: 50)).foregroundColor(.orange.opacity(0.7))
-                            Text("All \(logStore.sessions.count) sessions")
-                                .font(.system(size: 18, weight: .semibold)).foregroundColor(.white)
-                            Text("will be included in the export")
+                        // All-sessions summary card
+                        VStack(spacing: 14) {
+                            Image(systemName: "tray.full.fill")
+                                .font(.system(size: 52)).foregroundColor(.orange.opacity(0.85))
+                            Text("\(logStore.sessions.count) " + L(.sessions))
+                                .font(.system(size: 22, weight: .bold)).foregroundColor(.white)
+                            Text(L(.willBeIncluded))
                                 .font(.system(size: 13)).foregroundColor(.gray)
                         }
-                        .frame(maxHeight: .infinity)
-                        .padding(.top, 30)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .padding(.top, 20)
                     }
 
-                    // Export + Share bar
-                    VStack(spacing: 10) {
-                        if !selectAll && selectedIDs.isEmpty {
-                            Text("Select at least one session")
-                                .font(.system(size: 12)).foregroundColor(.gray)
+                    // ── Export button ──
+                    VStack(spacing: 8) {
+                        if !exportAll && selectedIDs.isEmpty {
+                            Text(L(.selectAtLeastOne))
+                                .font(.system(size: 12)).foregroundColor(.red.opacity(0.8))
                         }
-                        Button(action: generateAndShare) {
-                            if isGenerating {
-                                ProgressView().tint(.white)
-                                    .frame(maxWidth: .infinity).frame(height: 52)
-                                    .background(Color.orange.opacity(0.7)).cornerRadius(26)
-                            } else {
-                                HStack(spacing: 8) {
-                                    Image(systemName: "square.and.arrow.up")
-                                    Text("Export \(sessionsToExport.count) Session\(sessionsToExport.count == 1 ? "" : "s") as \(format.rawValue)")
-                                        .font(.system(size: 15, weight: .semibold))
+                        Button(action: doExport) {
+                            ZStack {
+                                if isWorking {
+                                    ProgressView().tint(.white)
+                                } else {
+                                    HStack(spacing: 10) {
+                                        Image(systemName: "square.and.arrow.up")
+                                            .font(.system(size: 16, weight: .semibold))
+                                        Text(exportLabel)
+                                            .font(.system(size: 16, weight: .semibold))
+                                    }
                                 }
-                                .foregroundColor(.white)
-                                .frame(maxWidth: .infinity).frame(height: 52)
-                                .background(Color.orange).cornerRadius(26)
                             }
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity).frame(height: 54)
+                            .background(canExport ? Color.orange : Color.gray.opacity(0.35))
+                            .cornerRadius(27)
                         }
-                        .disabled(sessionsToExport.isEmpty || isGenerating)
-                        .opacity(sessionsToExport.isEmpty ? 0.5 : 1)
+                        .disabled(!canExport || isWorking)
                     }
-                    .padding(.horizontal, 20).padding(.vertical, 14)
-                    .background(Color(hex: "1C1C1E"))
+                    .padding(.horizontal, 20).padding(.vertical, 16)
+                    .background(Color(hex: "1A1A1A"))
                 }
             }
-            .navigationTitle("Export Workouts")
+            .navigationTitle(L(.exportData))
             .navigationBarTitleDisplayMode(.inline)
-            .navigationBarItems(leading: Button("Cancel") { dismiss() }.foregroundColor(.orange))
+            .navigationBarItems(leading:
+                Button(L(.cancel)) { dismiss() }.foregroundColor(.orange)
+            )
             .sheet(isPresented: $showShare) {
-                if let item = shareItem { ShareSheetView(items: [item]) }
+                if let url = shareURL { ShareSheetView(items: [url]) }
             }
         }
         .preferredColorScheme(.dark)
     }
 
-    func toggle(_ s: WorkoutSession) {
-        if selectedIDs.contains(s.id) { selectedIDs.remove(s.id) }
-        else { selectedIDs.insert(s.id) }
+    var canExport: Bool {
+        !sessionsToExport.isEmpty
     }
 
-    func checkCircle(on: Bool) -> some View {
-        ZStack {
-            Circle().stroke(on ? Color.orange : Color.gray, lineWidth: 2).frame(width: 22, height: 22)
-            if on { Circle().fill(Color.orange).frame(width: 14, height: 14) }
+    var exportLabel: String {
+        let count = sessionsToExport.count
+        return "\(count) \(L(.sessions)) · \(format.rawValue)"
+    }
+
+    func scopeButton(label: String, active: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(label)
+                .font(.system(size: 13, weight: active ? .semibold : .regular))
+                .foregroundColor(active ? .orange : .gray)
+                .frame(maxWidth: .infinity).padding(.vertical, 8)
+                .background(active ? Color.orange.opacity(0.12) : Color.clear)
+                .cornerRadius(10)
+                .overlay(RoundedRectangle(cornerRadius: 10)
+                    .stroke(active ? Color.orange.opacity(0.4) : Color.gray.opacity(0.2), lineWidth: 1))
         }
     }
 
-    func generateAndShare() {
-        isGenerating = true
+    func toggle(_ id: UUID) {
+        if selectedIDs.contains(id) { selectedIDs.remove(id) }
+        else { selectedIDs.insert(id) }
+    }
+
+    func doExport() {
+        guard canExport else { return }
+        isWorking = true
+        let sessions = sessionsToExport
+        let fmt = format
         DispatchQueue.global(qos: .userInitiated).async {
-            let sessions = sessionsToExport
             let url: URL?
-            switch format {
-            case .csv: url = ExportHelper.generateCSV(sessions: sessions)
-            case .pdf: url = ExportHelper.generatePDF(sessions: sessions)
+            switch fmt {
+            case .csv:  url = ExportHelper.generateCSV(sessions: sessions)
+            case .pdf:  url = ExportHelper.generatePDF(sessions: sessions)
+            case .json: url = ExportHelper.generateJSON(sessions: sessions)
             }
             DispatchQueue.main.async {
-                isGenerating = false
+                isWorking = false
                 if let url {
-                    shareItem = url
+                    shareURL = url
                     showShare = true
                 }
             }
         }
     }
 }
+
 
 // MARK: - Share Sheet
 struct ShareSheetView: UIViewControllerRepresentable {
@@ -1004,6 +1214,27 @@ struct ShareSheetView: UIViewControllerRepresentable {
 
 // MARK: - Export Helper
 struct ExportHelper {
+
+    // MARK: JSON
+    static func generateJSON(sessions: [WorkoutSession]) -> URL? {
+        struct LogBundle: Codable {
+            let exportDate: String
+            let sessionCount: Int
+            let sessions: [WorkoutSession]
+        }
+        let df = DateFormatter()
+        df.dateFormat = "yyyy-MM-dd"
+        let bundle = LogBundle(
+            exportDate: df.string(from: Date()),
+            sessionCount: sessions.count,
+            sessions: sessions.sorted { $0.date > $1.date }
+        )
+        guard let data = try? JSONEncoder().encode(bundle) else { return nil }
+        let filename = "FitMetricsLog_WorkoutLogs_\(df.string(from: Date())).json"
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
+        try? data.write(to: url)
+        return url
+    }
 
     // MARK: CSV
     static func generateCSV(sessions: [WorkoutSession]) -> URL? {
@@ -1044,7 +1275,7 @@ struct ExportHelper {
         }
 
         let csv = rows.joined(separator: "\n")
-        return writeTemp(data: Data(csv.utf8), filename: "FlexCore_Workouts_\(timestamp()).csv")
+        return writeTemp(data: Data(csv.utf8), filename: "FitMetricsLog_Workouts_\(timestamp()).csv")
     }
 
     private static func csvEscape(_ s: String) -> String {
@@ -1100,7 +1331,7 @@ struct ExportHelper {
             fillBackground()
 
             // Title
-            drawText("FlexCore — Workout Log", x: margin, y: y, size: 22, bold: true, color: textColor)
+            drawText("FitMetricsLog — Workout Log", x: margin, y: y, size: 22, bold: true, color: textColor)
             y += 30
             drawText("Generated \(df.string(from: Date())) · \(sessions.count) sessions",
                      x: margin, y: y, size: 11, color: subColor)
@@ -1165,7 +1396,7 @@ struct ExportHelper {
             }
         }
 
-        return writeTemp(data: pdfData, filename: "FlexCore_Workouts_\(timestamp()).pdf")
+        return writeTemp(data: pdfData, filename: "FitMetricsLog_Workouts_\(timestamp()).pdf")
     }
 
     // MARK: Helpers

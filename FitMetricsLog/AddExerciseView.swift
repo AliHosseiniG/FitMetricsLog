@@ -11,7 +11,17 @@
 import SwiftUI
 import PhotosUI
 
+extension Color {
+    func toHex() -> String? {
+        let ui = UIColor(self)
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        guard ui.getRed(&r, green: &g, blue: &b, alpha: &a) else { return nil }
+        return String(format: "%02X%02X%02X", Int(r*255), Int(g*255), Int(b*255))
+    }
+}
+
 struct AddExerciseView: View {
+    @ObservedObject private var loc = LocalizationManager.shared
     @EnvironmentObject var exerciseStore: ExerciseStore
     @EnvironmentObject var logStore:      WorkoutLogStore
     @EnvironmentObject var planStore:     WorkoutPlanStore
@@ -38,8 +48,27 @@ struct AddExerciseView: View {
     @FocusState private var focused: Bool
 
     var isEditing: Bool { exerciseToEdit != nil }
-    let colorPresets = ["FF6B00","FF3B30","FF9500","FFCC00","34C759",
-                        "00C7BE","007AFF","5856D6","AF52DE","FF2D55"]
+    let colorPresets = [
+        // Oranges & Reds
+        "FF6B00","FF3B30","FF2D55","FF6B6B","FF9500",
+        "FF5733","E74C3C","C0392B","FF8C69","FFA07A",
+        // Yellows & Greens
+        "FFCC00","FFD60A","FFEAA7","F1C40F","E67E22",
+        "34C759","30D158","96CEB4","00C7BE","2ECC71",
+        "27AE60","1ABC9C","00B894","55EFC4","A8E6CF",
+        // Blues & Purples
+        "32ADE6","007AFF","45B7D1","3498DB","2980B9",
+        "5856D6","AF52DE","BF5AF2","9B59B6","8E44AD",
+        "6C5CE7","A29BFE","74B9FF","0984E3","00CEC9",
+        // Pinks & Browns
+        "FF2D55","FD79A8","E84393","C9184A","FF4DA6",
+        "AC8E68","D2A679","A0522D","8B4513","795548",
+        // Neutrals
+        "636366","8E8E93","B2BEC3","DFE6E9","FFFFFF",
+        "2D3436","1E272E","000000","34495E","7F8C8D"
+    ]
+    @State private var showCustomColorPicker = false
+    @State private var customColor: Color = .orange
 
     var body: some View {
         ZStack {
@@ -63,7 +92,7 @@ struct AddExerciseView: View {
                     Spacer()
                     HStack(spacing: 10) {
                         Image(systemName: "checkmark.circle.fill").foregroundColor(.green)
-                        Text("Exercise saved!")
+                        Text(L(.exerciseSaved))
                             .font(.system(size: 14, weight: .semibold)).foregroundColor(.white)
                     }
                     .padding(.horizontal, 24).padding(.vertical, 14)
@@ -76,12 +105,12 @@ struct AddExerciseView: View {
             }
         }
         .onAppear(perform: prefill)
-        .sheet(isPresented: $showPHPicker)  { PHPickerWrapper  { img in if let img, images.count < 3 { images.append(img) } } }
-        .sheet(isPresented: $showCamPicker) { CameraWrapper    { img in if let img, images.count < 3 { images.append(img) } } }
+        .sheet(isPresented: $showPHPicker)  { PHPickerWrapper  { img in if let img, images.count < 6 { images.append(img) } } }
+        .sheet(isPresented: $showCamPicker) { CameraWrapper    { img in if let img, images.count < 6 { images.append(img) } } }
         .confirmationDialog("Add Photo", isPresented: $showSource) {
-            Button("Photo Library") { showPHPicker  = true }
-            Button("Camera")        { showCamPicker = true }
-            Button("Cancel", role: .cancel) {}
+            Button(L(.chooseFromLibrary)) { showPHPicker  = true }
+            Button(L(.takePhoto)) { showCamPicker = true }
+            Button(L(.cancel), role: .cancel) {}
         }
     }
 
@@ -91,11 +120,11 @@ struct AddExerciseView: View {
             Button(action: { dismiss() }) {
                 HStack(spacing: 5) {
                     Image(systemName: "chevron.left").font(.system(size: 14, weight: .semibold))
-                    Text("Cancel")
+                    Text(L(.cancel))
                 }.foregroundColor(.orange)
             }
             Spacer()
-            Text(isEditing ? "Edit Exercise" : "New Exercise")
+            Text(isEditing ? L(.editExercise) : L(.newExercise))
                 .font(.system(size: 17, weight: .semibold)).foregroundColor(.white)
             Spacer()
             HStack(spacing: 5) {
@@ -110,9 +139,9 @@ struct AddExerciseView: View {
     var imageSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("Photos").font(.system(size: 14, weight: .medium)).foregroundColor(.gray)
+                Text(L(.photos)).font(.system(size: 14, weight: .medium)).foregroundColor(.gray)
                 Spacer()
-                Text("\(images.count)/3").font(.system(size: 12)).foregroundColor(.gray)
+                Text("\(images.count)/6").font(.system(size: 12)).foregroundColor(.gray)
             }
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 10) {
@@ -127,11 +156,11 @@ struct AddExerciseView: View {
                             }.offset(x: 6, y: -6)
                         }
                     }
-                    if images.count < 3 {
+                    if images.count < 6 {
                         Button(action: { showSource = true }) {
                             VStack(spacing: 8) {
                                 Image(systemName: "camera.fill").font(.system(size: 22)).foregroundColor(.orange)
-                                Text("Add Photo").font(.system(size: 11)).foregroundColor(.gray)
+                                Text(L(.addPhoto)).font(.system(size: 11)).foregroundColor(.gray)
                             }
                             .frame(width: 110, height: 110).background(Color(hex: "1C1C1E")).cornerRadius(12)
                             .overlay(RoundedRectangle(cornerRadius: 12)
@@ -146,14 +175,14 @@ struct AddExerciseView: View {
     // MARK: Form
     var formSection: some View {
         VStack(spacing: 14) {
-            FormField(title: "Exercise Name") {
+            FormField(title: L(.exerciseName)) {
                 TextField("e.g. Bench Press", text: $name)
                     .foregroundColor(.white).focused($focused)
             }
-            FormField(title: "Description") {
+            FormField(title: L(.exerciseDesc)) {
                 ZStack(alignment: .topLeading) {
                     if desc.isEmpty {
-                        Text("Describe the exercise...")
+                        Text(L(.exerciseDesc) + "...")
                             .foregroundColor(.gray.opacity(0.5)).font(.system(size: 14)).padding(2)
                     }
                     TextEditor(text: $desc).foregroundColor(.white).frame(minHeight: 80)
@@ -164,7 +193,7 @@ struct AddExerciseView: View {
             // ── Multi Muscle Group Selector ──
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
-                    Text("Muscle Groups").font(.system(size: 13, weight: .medium)).foregroundColor(.gray)
+                    Text(L(.muscleGroups)).font(.system(size: 13, weight: .medium)).foregroundColor(.gray)
                     Spacer()
                     if muscleGroups.count > 1 {
                         Text("Primary: \(muscleGroups[0].rawValue)")
@@ -227,20 +256,20 @@ struct AddExerciseView: View {
             }
             .padding(14).background(Color(hex: "1C1C1E")).cornerRadius(12)
 
-            FormField(title: "Difficulty") {
+            FormField(title: L(.difficulty)) {
                 Picker("", selection: $difficulty) {
-                    ForEach(Exercise.Difficulty.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                    ForEach(Exercise.Difficulty.allCases, id: \.self) { Text($0.localizedLabel).tag($0) }
                 }.pickerStyle(.segmented)
             }
             HStack(spacing: 10) {
-                NumField(title: "Duration (min)", value: $duration, range: 1...180)
-                NumField(title: "Sets",           value: $sets,     range: 1...20)
-                NumField(title: "Reps",           value: $reps,     range: 1...100)
+                NumField(title: L(.duration) + " (min)", value: $duration, range: 1...180)
+                NumField(title: L(.sets), value: $sets, range: 1...20)
+                NumField(title: L(.reps), value: $reps, range: 1...100)
             }
-            FormField(title: "Tags (comma separated)") {
+            FormField(title: L(.tags)) {
                 TextField("strength, compound...", text: $tags).foregroundColor(.white).focused($focused)
             }
-            FormField(title: "Video URL (optional)") {
+            FormField(title: L(.videoURL) + " (optional)") {
                 TextField("https://youtu.be/...", text: $videoURL)
                     .foregroundColor(.white).autocapitalization(.none).keyboardType(.URL).focused($focused)
             }
@@ -251,19 +280,41 @@ struct AddExerciseView: View {
     var colorSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("Chart Color").font(.system(size: 14, weight: .medium)).foregroundColor(.gray)
+                Text(L(.chartColor)).font(.system(size: 14, weight: .medium)).foregroundColor(.gray)
                 Spacer()
                 Circle().fill(Color(hex: colorHex)).frame(width: 24, height: 24)
+                    .overlay(Circle().stroke(Color.white.opacity(0.3), lineWidth: 1))
             }
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 5), spacing: 10) {
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 8), spacing: 8) {
                 ForEach(colorPresets, id: \.self) { hex in
                     Button(action: { colorHex = hex }) {
-                        Circle().fill(Color(hex: hex)).frame(height: 36)
+                        Circle().fill(Color(hex: hex)).frame(height: 30)
                             .overlay(Circle().stroke(Color.white, lineWidth: colorHex == hex ? 2.5 : 0))
-                            .scaleEffect(colorHex == hex ? 1.15 : 1)
+                            .scaleEffect(colorHex == hex ? 1.12 : 1)
                             .animation(.spring(response: 0.3), value: colorHex)
                     }
                 }
+                // Custom color button
+                Button(action: { showCustomColorPicker = true }) {
+                    ZStack {
+                        Circle()
+                            .fill(AngularGradient(colors: [.red,.orange,.yellow,.green,.blue,.purple,.red],
+                                                  center: .center))
+                            .frame(height: 30)
+                        if !colorPresets.contains(colorHex) {
+                            Circle().stroke(Color.white, lineWidth: 2.5).frame(height: 30)
+                        }
+                        Image(systemName: "plus").font(.system(size: 12, weight: .bold)).foregroundColor(.white)
+                    }
+                }
+            }
+            if showCustomColorPicker {
+                ColorPicker("Custom Color", selection: $customColor, supportsOpacity: false)
+                    .foregroundColor(.white)
+                    .onChange(of: customColor) { c in
+                        if let hex = c.toHex() { colorHex = hex }
+                    }
+                    .padding(.top, 4)
             }
         }
         .padding(14).background(Color(hex: "1C1C1E")).cornerRadius(14)
@@ -321,17 +372,28 @@ struct AddExerciseView: View {
         colorHex     = ex.customColorHex ?? ex.muscleGroup.colorHex
     }
 
+    // Resize image to max dimension, keeping aspect ratio
+    func resizedImage(_ img: UIImage, maxDimension: CGFloat = 1200) -> UIImage {
+        let size = img.size
+        let scale = min(maxDimension / size.width, maxDimension / size.height, 1.0)
+        if scale >= 1.0 { return img }
+        let newSize = CGSize(width: size.width * scale, height: size.height * scale)
+        let renderer = UIGraphicsImageRenderer(size: newSize)
+        return renderer.image { _ in img.draw(in: CGRect(origin: .zero, size: newSize)) }
+    }
+
     func save() {
         let trimmed = name.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty, !muscleGroups.isEmpty else { return }
         let tagList = tags.components(separatedBy: CharacterSet(charactersIn: ",،"))
             .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        let processedImages = images.map { resizedImage($0, maxDimension: 1200) }
         var ex = Exercise(
             name: trimmed, description: desc,
             muscleGroups: muscleGroups,
             difficulty: difficulty, duration: duration,
             sets: sets, reps: reps,
-            imageDatas: images.compactMap { $0.jpegData(compressionQuality: 0.8) },
+            imageDatas: processedImages.compactMap { $0.jpegData(compressionQuality: 0.82) },
             videoURL: videoURL, tags: tagList, customColorHex: colorHex
         )
         if let existing = exerciseToEdit {

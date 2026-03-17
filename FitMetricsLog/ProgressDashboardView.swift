@@ -6,6 +6,7 @@
 import SwiftUI
 
 struct ProgressDashboardView: View {
+    @ObservedObject private var loc = LocalizationManager.shared
     @EnvironmentObject var logStore:      WorkoutLogStore
     @EnvironmentObject var exerciseStore: ExerciseStore
 
@@ -108,6 +109,7 @@ struct ProgressDashboardView: View {
                             title: g.rawValue,
                             icon: g.icon,
                             color: g.color,
+                            muscleImage: g.image,
                             isSelected: on
                         ) {
                             if on { muscles.remove(g.id) }
