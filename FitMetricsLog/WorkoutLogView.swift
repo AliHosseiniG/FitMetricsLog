@@ -16,6 +16,8 @@ struct LogView: View {
     @State private var isSelecting     = false
     @State private var selectedIDs     = Set<UUID>()
     @State private var showDeleteAlert = false
+    @State private var editSession:    WorkoutSession? = nil
+    @State private var chartExercise:  Exercise? = nil
 
     var body: some View {
         NavigationView {
@@ -96,7 +98,17 @@ struct LogView: View {
                                     } else {
                                         NavigationLink(destination: SessionDetailView(session: session)) {
                                             SessionRowCard(session: session)
-                                        }.padding(.horizontal, 20)
+                                        }
+                                        .padding(.horizontal, 20)
+                                        .contextMenu {
+                                            Button { editSession = session } label: {
+                                                Label(L(.edit), systemImage: "pencil")
+                                            }
+                                            Divider()
+                                            Button(role: .destructive) { logStore.deleteSession(session) } label: {
+                                                Label(L(.delete), systemImage: "trash")
+                                            }
+                                        }
                                     }
                                 }
                                 Spacer(minLength: 100)
@@ -114,6 +126,12 @@ struct LogView: View {
             }
             .sheet(isPresented: $showingExport) {
                 ExportView().environmentObject(logStore)
+            }
+            .sheet(item: $editSession) { s in
+                NewSessionView(prefillPlan: nil, existingSession: s)
+                    .environmentObject(logStore)
+                    .environmentObject(exerciseStore)
+                    .environmentObject(planStore)
             }
             .alert("Delete \(selectedIDs.count) Session\(selectedIDs.count == 1 ? "" : "s")?",
                    isPresented: $showDeleteAlert) {
@@ -231,6 +249,7 @@ struct SessionDetailView: View {
     @State private var showingDelete  = false
     @State private var showingEdit    = false
     @State private var isReordering   = false
+    @State private var chartExercise: Exercise? = nil
 
     var live: WorkoutSession {
         logStore.sessions.first { $0.id == session.id } ?? session
@@ -327,7 +346,15 @@ struct SessionDetailView: View {
                         .padding(.horizontal, 20)
                     } else {
                         ForEach(live.logs) { log in
-                            ExLogCard(log: log, onToggleComplete: { toggleCompleted(log: log) })
+                            ExLogCard(
+                                log: log,
+                                onChart: {
+                                    if let ex = exerciseStore.exercises.first(where: { $0.id == log.exerciseId }) {
+                                        chartExercise = ex
+                                    }
+                                },
+                                onToggleComplete: { toggleCompleted(log: log) }
+                            )
                                 .padding(.horizontal, 20)
                                 .background(
                                     log.isCompleted
@@ -352,6 +379,9 @@ struct SessionDetailView: View {
                 .environmentObject(logStore)
                 .environmentObject(exerciseStore)
                 .environmentObject(planStore)
+        }
+        .sheet(item: $chartExercise) { ex in
+            ExerciseChartView(exercise: ex).environmentObject(logStore)
         }
         .alert(L(.deleteSession), isPresented: $showingDelete) {
             Button(L(.delete), role: .destructive) { logStore.deleteSession(session); dismiss() }
@@ -385,6 +415,7 @@ struct SessCell: View {
 
 struct ExLogCard: View {
     let log: WorkoutLog
+    var onChart: (() -> Void)? = nil
     var onToggleComplete: (() -> Void)? = nil
     var body: some View {
         let liveG = MuscleGroupManager.shared.liveGroup(for: log.muscleGroup.id) ?? log.muscleGroup
@@ -404,10 +435,23 @@ struct ExLogCard: View {
                     }
                 }
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(log.exerciseName)
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundColor(log.isCompleted ? .gray : .white)
-                        .strikethrough(log.isCompleted, color: .gray)
+                    HStack(spacing: 6) {
+                        Text(log.exerciseName)
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundColor(log.isCompleted ? .gray : .white)
+                            .strikethrough(log.isCompleted, color: .gray)
+                        // Chart button — inline next to exercise name
+                        if onChart != nil {
+                            Button(action: { onChart?() }) {
+                                Image(systemName: "chart.line.uptrend.xyaxis")
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundColor(.orange.opacity(0.85))
+                                    .frame(width: 26, height: 22)
+                                    .background(Color.orange.opacity(0.12))
+                                    .cornerRadius(6)
+                            }
+                        }
+                    }
                     Text(liveG.rawValue)
                         .font(.system(size: 11)).foregroundColor(liveG.color)
                 }
@@ -468,6 +512,13 @@ struct ExLogCard: View {
             }
         }
         .padding(14).background(Color(hex: "1C1C1E")).cornerRadius(14)
+        .contextMenu {
+            if let onChart {
+                Button(action: onChart) {
+                    Label("Volume Chart", systemImage: "chart.line.uptrend.xyaxis")
+                }
+            }
+        }
     }
 }
 

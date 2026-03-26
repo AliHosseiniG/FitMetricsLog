@@ -18,6 +18,8 @@ struct ExerciseListView: View {
     @State private var isSelecting   = false
     @State private var selectedIDs   = Set<UUID>()
     @State private var showDeleteAlert = false
+    @State private var chartExercise: Exercise? = nil
+    @State private var editExercise:  Exercise? = nil
 
     var filtered: [Exercise] {
         var result = exerciseStore.exercises
@@ -123,7 +125,20 @@ struct ExerciseListView: View {
                                     } else {
                                         NavigationLink(destination: ExerciseDetailView(exercise: ex)) {
                                             ExerciseRowCard(exercise: ex)
-                                        }.padding(.horizontal, 20)
+                                        }
+                                        .padding(.horizontal, 20)
+                                        .contextMenu {
+                                            Button { editExercise = ex } label: {
+                                                Label(L(.edit), systemImage: "pencil")
+                                            }
+                                            Button { chartExercise = ex } label: {
+                                                Label("Volume Chart", systemImage: "chart.line.uptrend.xyaxis")
+                                            }
+                                            Divider()
+                                            Button(role: .destructive) { exerciseStore.delete(ex) } label: {
+                                                Label(L(.delete), systemImage: "trash")
+                                            }
+                                        }
                                     }
                                 }
                                 Spacer(minLength: 100)
@@ -137,6 +152,14 @@ struct ExerciseListView: View {
                 AddExerciseView()
                     .environmentObject(exerciseStore)
                     .environmentObject(logStore)
+            }
+            .sheet(item: $editExercise) { ex in
+                AddExerciseView(exerciseToEdit: ex)
+                    .environmentObject(exerciseStore)
+                    .environmentObject(logStore)
+            }
+            .sheet(item: $chartExercise) { ex in
+                ExerciseChartView(exercise: ex).environmentObject(logStore)
             }
             .alert("Delete \(selectedIDs.count) Exercise\(selectedIDs.count == 1 ? "" : "s")?",
                    isPresented: $showDeleteAlert) {

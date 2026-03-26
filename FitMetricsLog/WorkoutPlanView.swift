@@ -16,6 +16,7 @@ struct WorkoutPlanListView: View {
     @State private var isSelecting     = false
     @State private var selectedIDs     = Set<UUID>()
     @State private var showDeleteAlert = false
+    @State private var quickEdit: WorkoutPlan? = nil
 
     var body: some View {
         NavigationView {
@@ -86,7 +87,17 @@ struct WorkoutPlanListView: View {
                                     } else {
                                         NavigationLink(destination: PlanDetailView(plan: plan)) {
                                             PlanRowCard(plan: plan)
-                                        }.padding(.horizontal, 20)
+                                        }
+                                        .padding(.horizontal, 20)
+                                        .contextMenu {
+                                            Button { quickEdit = plan } label: {
+                                                Label(L(.edit), systemImage: "pencil")
+                                            }
+                                            Divider()
+                                            Button(role: .destructive) { planStore.delete(plan) } label: {
+                                                Label(L(.delete), systemImage: "trash")
+                                            }
+                                        }
                                     }
                                 }
                                 Spacer(minLength: 100)
@@ -108,6 +119,11 @@ struct WorkoutPlanListView: View {
             }
             .sheet(isPresented: $showingAutoGen) {
                 AutoGeneratePlanView()
+                    .environmentObject(planStore)
+                    .environmentObject(exerciseStore)
+            }
+            .sheet(item: $quickEdit) { plan in
+                PlanFormView(existing: plan)
                     .environmentObject(planStore)
                     .environmentObject(exerciseStore)
             }

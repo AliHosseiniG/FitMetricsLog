@@ -379,15 +379,18 @@ struct HomeVolumeChart: View {
     let data: [(date: Date, volume: Double)]
     let isBar: Bool
 
-    // Y-axis: 4 nice round labels
-    func yLabels(max: Double) -> [Double] {
-        guard max > 0 else { return [0] }
-        let step = (max / 3).rounded(.up)
-        let nice = step <= 10 ? ceil(step / 5) * 5
+    // Y-axis: 4 nice labels starting from minVal (not 0)
+    func yLabels(min minVal: Double, max maxVal: Double) -> [Double] {
+        guard maxVal > minVal else { return [minVal] }
+        let range = maxVal - minVal
+        let step = (range / 3).rounded(.up)
+        let nice = step <= 5  ? ceil(step / 1)  * 1
+                 : step <= 10 ? ceil(step / 5)  * 5
                  : step <= 50 ? ceil(step / 10) * 10
                  : step <= 200 ? ceil(step / 50) * 50
                  : ceil(step / 100) * 100
-        return [0, nice, nice * 2, nice * 3].filter { $0 <= max * 1.15 }
+        let base = (minVal / nice).rounded(.down) * nice
+        return [base, base+nice, base+nice*2, base+nice*3].filter { $0 <= maxVal * 1.05 + nice }
     }
 
     // X-axis: up to 5 evenly-spaced date labels
@@ -406,8 +409,9 @@ struct HomeVolumeChart: View {
     }
 
     var body: some View {
+        let minVol = (data.map(\.volume).min() ?? 0)
         let maxVol = (data.map(\.volume).max() ?? 1)
-        let yLbls  = yLabels(max: maxVol)
+        let yLbls  = yLabels(min: minVol, max: maxVol)
         let xLbls  = xLabels()
         let yLabelW: CGFloat = 40
         let xLabelH: CGFloat = 18
@@ -433,8 +437,10 @@ struct HomeVolumeChart: View {
                         Color(hex: "1C1C1E")
 
                         // Y grid lines
+                        let yRange = max(maxVol - minVol, 1.0)
+                        let yBase  = minVol * 0.95   // slight padding below min
                         ForEach(yLbls, id: \.self) { val in
-                            let y = h * (1 - CGFloat(val / (maxVol * 1.05)))
+                            let y = h * (1 - CGFloat((val - yBase) / (maxVol * 1.05 - yBase)))
                             Path { p in p.move(to: CGPoint(x: 0, y: y)); p.addLine(to: CGPoint(x: w, y: y)) }
                                 .stroke(Color.white.opacity(val == 0 ? 0.15 : 0.06), lineWidth: val == 0 ? 1 : 0.5)
                         }
@@ -443,9 +449,10 @@ struct HomeVolumeChart: View {
                             let barW = max(3, (w - 8) / CGFloat(max(data.count, 1)) - 2)
                             HStack(alignment: .bottom, spacing: 2) {
                                 ForEach(Array(data.enumerated()), id: \.offset) { _, pt in
+                                    let barH = max(3, (h - 4) * CGFloat((pt.volume - yBase) / (maxVol * 1.05 - yBase)))
                                     RoundedRectangle(cornerRadius: 3)
                                         .fill(Color.orange.opacity(0.8))
-                                        .frame(width: barW, height: max(3, (h - 4) * CGFloat(pt.volume / (maxVol * 1.05))))
+                                        .frame(width: barW, height: barH)
                                 }
                             }
                             .padding(.horizontal, 4).padding(.bottom, 2)
@@ -455,7 +462,7 @@ struct HomeVolumeChart: View {
                             let pts: [CGPoint] = data.enumerated().map { i, pt in
                                 CGPoint(
                                     x: data.count > 1 ? CGFloat(i) / CGFloat(data.count - 1) * (w - 8) + 4 : w / 2,
-                                    y: (h - 4) * (1 - CGFloat(pt.volume / (maxVol * 1.05))) + 2
+                                    y: (h - 4) * (1 - CGFloat((pt.volume - yBase) / (maxVol * 1.05 - yBase))) + 2
                                 )
                             }
                             // Fill under line
