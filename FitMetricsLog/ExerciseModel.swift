@@ -109,6 +109,28 @@ class ExerciseStore: ObservableObject {
     func delete(at offsets: IndexSet)  { exercises.remove(atOffsets: offsets); save() }
     func clearAll() { exercises = []; save() }
 
+    /// Resize oversized exercise images in background — safe, no data deleted
+    func resizeStoredImages(maxDimension: CGFloat = 900) {
+        var changed = false
+        for i in exercises.indices {
+            let newDatas: [Data] = exercises[i].imageDatas.map { data in
+                guard let img = UIImage(data: data) else { return data }
+                let sz = img.size
+                guard sz.width > maxDimension || sz.height > maxDimension else { return data }
+                let scale = min(maxDimension / sz.width, maxDimension / sz.height)
+                let newSz = CGSize(width: sz.width * scale, height: sz.height * scale)
+                let renderer = UIGraphicsImageRenderer(size: newSz)
+                let resized = renderer.image { _ in img.draw(in: CGRect(origin: .zero, size: newSz)) }
+                return resized.jpegData(compressionQuality: 0.82) ?? data
+            }
+            if newDatas != exercises[i].imageDatas {
+                exercises[i].imageDatas = newDatas
+                changed = true
+            }
+        }
+        if changed { save() }
+    }
+
     func exercises(for group: MuscleGroup) -> [Exercise] {
         exercises.filter { $0.muscleGroups.contains(group) }
     }

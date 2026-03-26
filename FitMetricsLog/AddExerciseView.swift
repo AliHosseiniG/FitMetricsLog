@@ -373,7 +373,7 @@ struct AddExerciseView: View {
     }
 
     // Resize image to max dimension, keeping aspect ratio
-    func resizedImage(_ img: UIImage, maxDimension: CGFloat = 1200) -> UIImage {
+    func resizedImage(_ img: UIImage, maxDimension: CGFloat = 900) -> UIImage {
         let size = img.size
         let scale = min(maxDimension / size.width, maxDimension / size.height, 1.0)
         if scale >= 1.0 { return img }
@@ -387,7 +387,7 @@ struct AddExerciseView: View {
         guard !trimmed.isEmpty, !muscleGroups.isEmpty else { return }
         let tagList = tags.components(separatedBy: CharacterSet(charactersIn: ",،"))
             .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-        let processedImages = images.map { resizedImage($0, maxDimension: 1200) }
+        let processedImages = images.map { resizedImage($0, maxDimension: 900) }
         var ex = Exercise(
             name: trimmed, description: desc,
             muscleGroups: muscleGroups,

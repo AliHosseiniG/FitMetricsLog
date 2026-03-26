@@ -217,7 +217,7 @@ struct ExerciseDetailView: View {
                 }
             }
 
-            // Floating nav bar overlay
+            // Floating nav bar overlay — always on top
             VStack {
                 HStack {
                     // ← Back button
@@ -226,8 +226,9 @@ struct ExerciseDetailView: View {
                             .font(.system(size: 16, weight: .semibold))
                             .foregroundColor(.white)
                             .frame(width: 40, height: 40)
-                            .background(Color.black.opacity(0.6))
+                            .background(Color.black.opacity(0.7))
                             .clipShape(Circle())
+                            .shadow(color: .black.opacity(0.4), radius: 4)
                     }
                     Spacer()
                     // ⋯ Menu
@@ -236,16 +237,18 @@ struct ExerciseDetailView: View {
                         Button("Delete", systemImage: "trash", role: .destructive) { showingDelete = true }
                     } label: {
                         Image(systemName: "ellipsis")
-                            .font(.system(size: 16))
+                            .font(.system(size: 16, weight: .semibold))
                             .foregroundColor(.white)
                             .frame(width: 40, height: 40)
-                            .background(Color.black.opacity(0.6))
+                            .background(Color.black.opacity(0.7))
                             .clipShape(Circle())
+                            .shadow(color: .black.opacity(0.4), radius: 4)
                     }
                 }
                 .padding(.horizontal, 20).padding(.top, 55)
                 Spacer()
             }
+            .zIndex(50)  // always above hero image
 
             // Full-screen image viewer (topmost layer)
             if let idx = fullscreenIndex {
@@ -281,7 +284,8 @@ struct ExerciseDetailView: View {
             if let img = live.firstImage {
                 Image(uiImage: img)
                     .resizable().scaledToFill()
-                    .frame(height: 300).clipped()
+                    .frame(maxWidth: .infinity, maxHeight: 300)
+                    .clipped()
                     .overlay(
                         LinearGradient(colors: [.clear, Color(hex: "111111")],
                                        startPoint: .center, endPoint: .bottom)
@@ -628,7 +632,9 @@ struct ExerciseRowCard: View {
                 if let img = exercise.firstImage {
                     Image(uiImage: img)
                         .resizable().scaledToFill()
-                        .frame(width: 78, height: 78).clipped().cornerRadius(12)
+                        .frame(width: 78, height: 78)
+                        .clipped().cornerRadius(12)
+                        .clipped()
                 } else {
                     Image(systemName: exercise.muscleGroup.icon)
                         .font(.system(size: 26)).foregroundColor(exercise.muscleGroup.color)

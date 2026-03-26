@@ -58,6 +58,7 @@ struct ContentView: View {
             // One-time resize of large stored images (safe — no data deleted)
             DispatchQueue.global(qos: .background).async {
                 logStore.resizeStoredImages(maxDimension: 600)
+                exerciseStore.resizeStoredImages(maxDimension: 900)
             }
         }
     }
