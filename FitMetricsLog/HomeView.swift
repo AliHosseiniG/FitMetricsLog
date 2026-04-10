@@ -157,6 +157,41 @@ struct HomeProgressSection: View {
     }
 
     @State private var showFilterSheet = false
+    @State private var showFullscreenChart = false
+
+    // Computed chart data & title (shared between inline and fullscreen)
+    var chartData: [(date: Date, volume: Double)] {
+        if !selectedExercises.isEmpty {
+            let allDays = selectedExercises.flatMap { eid in
+                logStore.dailyVolumesForExercise(id: eid, in: range)
+            }
+            let grouped = Dictionary(grouping: allDays, by: { Calendar.current.startOfDay(for: $0.date) })
+            return grouped.map { (date: $0.key, volume: $0.value.reduce(0) { $0 + $1.volume }) }
+                       .sorted { $0.date < $1.date }
+        }
+        if !selectedMuscles.isEmpty {
+            let groups = MuscleGroupManager.shared.groups.filter { selectedMuscles.contains($0.id) }
+            let allDays = groups.flatMap { g in logStore.dailyVolumes(in: range, muscle: g) }
+            let grouped = Dictionary(grouping: allDays, by: { Calendar.current.startOfDay(for: $0.date) })
+            return grouped.map { (date: $0.key, volume: $0.value.reduce(0) { $0 + $1.volume }) }
+                       .sorted { $0.date < $1.date }
+        }
+        return logStore.dailyVolumes(in: range, muscle: nil)
+    }
+
+    var chartTitle: String {
+        if selectedExercises.count == 1,
+           let ex = exerciseStore.exercises.first(where: { selectedExercises.contains($0.id) }) {
+            return "\(ex.name) Volume"
+        }
+        if selectedExercises.count > 1 { return "\(selectedExercises.count) Exercises Volume" }
+        if selectedMuscles.count == 1,
+           let g = MuscleGroupManager.shared.groups.first(where: { selectedMuscles.contains($0.id) }) {
+            return "\(g.rawValue) Volume"
+        }
+        if selectedMuscles.count > 1 { return "\(selectedMuscles.count) Groups Volume" }
+        return "Total Volume"
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -173,6 +208,10 @@ struct HomeProgressSection: View {
                 selectedExercises: $selectedExercises
             )
             .presentationDetents([.medium, .large])
+        }
+        .fullScreenCover(isPresented: $showFullscreenChart) {
+            FullscreenChartView(data: chartData, title: chartTitle, isBar: style == .bar)
+                .modifier(LandscapeModifier())
         }
     }
 
@@ -295,39 +334,9 @@ struct HomeProgressSection: View {
 
     var chartCard: some View {
         VStack(alignment: .leading, spacing: 8) {
-            let chartTitle: String = {
-                if selectedExercises.count == 1,
-                   let ex = exerciseStore.exercises.first(where: { selectedExercises.contains($0.id) }) {
-                    return "\(ex.name) Volume"
-                }
-                if selectedExercises.count > 1 { return "\(selectedExercises.count) Exercises Volume" }
-                if selectedMuscles.count == 1,
-                   let g = MuscleGroupManager.shared.groups.first(where: { selectedMuscles.contains($0.id) }) {
-                    return "\(g.rawValue) Volume"
-                }
-                if selectedMuscles.count > 1 { return "\(selectedMuscles.count) Groups Volume" }
-                return "Total Volume"
-            }()
             Text(chartTitle)
                 .font(.system(size: 15, weight: .bold)).foregroundColor(.white)
-            let data: [(date: Date, volume: Double)] = {
-                if !selectedExercises.isEmpty {
-                    let allDays = selectedExercises.flatMap { eid in
-                        logStore.dailyVolumesForExercise(id: eid, in: range)
-                    }
-                    let grouped = Dictionary(grouping: allDays, by: { Calendar.current.startOfDay(for: $0.date) })
-                    return grouped.map { (date: $0.key, volume: $0.value.reduce(0) { $0 + $1.volume }) }
-                               .sorted { $0.date < $1.date }
-                }
-                if !selectedMuscles.isEmpty {
-                    let groups = MuscleGroupManager.shared.groups.filter { selectedMuscles.contains($0.id) }
-                    let allDays = groups.flatMap { g in logStore.dailyVolumes(in: range, muscle: g) }
-                    let grouped = Dictionary(grouping: allDays, by: { Calendar.current.startOfDay(for: $0.date) })
-                    return grouped.map { (date: $0.key, volume: $0.value.reduce(0) { $0 + $1.volume }) }
-                               .sorted { $0.date < $1.date }
-                }
-                return logStore.dailyVolumes(in: range, muscle: nil)
-            }()
+            let data = chartData
             if data.isEmpty {
                 VStack(spacing: 10) {
                     Image(systemName: "chart.bar.xaxis")
@@ -338,7 +347,9 @@ struct HomeProgressSection: View {
                 .frame(maxWidth: .infinity).frame(height: 120)
                 .background(Color(hex: "1C1C1E")).cornerRadius(14)
             } else {
-                HomeVolumeChart(data: data, isBar: style == .bar)
+                HomeVolumeChart(data: data, isBar: style == .bar) {
+                    showFullscreenChart = true
+                }
             }
         }
     }
@@ -378,6 +389,10 @@ struct HomeProgressSection: View {
 struct HomeVolumeChart: View {
     let data: [(date: Date, volume: Double)]
     let isBar: Bool
+    var onFullscreen: (() -> Void)? = nil
+
+    @State private var hovered: Int? = nil
+    @GestureState private var isDragging = false
 
     // Y-axis: 4 nice labels starting from minVal (not 0)
     func yLabels(min minVal: Double, max maxVal: Double) -> [Double] {
@@ -408,6 +423,29 @@ struct HomeVolumeChart: View {
         let f = DateFormatter(); f.dateFormat = "d MMM"; return f
     }
 
+    var fullDateFormatter: DateFormatter {
+        let f = DateFormatter(); f.dateFormat = "d MMM yyyy"; return f
+    }
+
+    // Compute x position for a data point index
+    func xPos(index: Int, width: CGFloat) -> CGFloat {
+        guard data.count > 1 else { return width / 2 }
+        return CGFloat(index) / CGFloat(data.count - 1) * (width - 8) + 4
+    }
+
+    // Compute y position for a volume value
+    func yPos(volume: Double, height: CGFloat, yBase: Double, yTop: Double) -> CGFloat {
+        (height - 4) * (1 - CGFloat((volume - yBase) / (yTop - yBase))) + 2
+    }
+
+    // Find nearest index from drag x position
+    func nearestIndex(x: CGFloat, width: CGFloat) -> Int {
+        guard data.count > 1 else { return 0 }
+        let segW = (width - 8) / CGFloat(data.count - 1)
+        let idx = Int(((x - 4) / segW).rounded())
+        return max(0, min(data.count - 1, idx))
+    }
+
     var body: some View {
         let minVol = (data.map(\.volume).min() ?? 0)
         let maxVol = (data.map(\.volume).max() ?? 1)
@@ -416,6 +454,8 @@ struct HomeVolumeChart: View {
         let yLabelW: CGFloat = 40
         let xLabelH: CGFloat = 18
         let chartH:  CGFloat = 140
+        let yBase  = minVol * 0.95
+        let yTop   = maxVol * 1.05
 
         VStack(spacing: 0) {
             HStack(alignment: .bottom, spacing: 0) {
@@ -437,33 +477,30 @@ struct HomeVolumeChart: View {
                         Color(hex: "1C1C1E")
 
                         // Y grid lines
-                        let yRange = max(maxVol - minVol, 1.0)
-                        let yBase  = minVol * 0.95   // slight padding below min
                         ForEach(yLbls, id: \.self) { val in
-                            let y = h * (1 - CGFloat((val - yBase) / (maxVol * 1.05 - yBase)))
+                            let y = h * (1 - CGFloat((val - yBase) / (yTop - yBase)))
                             Path { p in p.move(to: CGPoint(x: 0, y: y)); p.addLine(to: CGPoint(x: w, y: y)) }
                                 .stroke(Color.white.opacity(val == 0 ? 0.15 : 0.06), lineWidth: val == 0 ? 1 : 0.5)
                         }
 
                         if isBar {
+                            // ── Bar chart ──
                             let barW = max(3, (w - 8) / CGFloat(max(data.count, 1)) - 2)
                             HStack(alignment: .bottom, spacing: 2) {
-                                ForEach(Array(data.enumerated()), id: \.offset) { _, pt in
-                                    let barH = max(3, (h - 4) * CGFloat((pt.volume - yBase) / (maxVol * 1.05 - yBase)))
+                                ForEach(Array(data.enumerated()), id: \.offset) { idx, pt in
+                                    let barH = max(3, (h - 4) * CGFloat((pt.volume - yBase) / (yTop - yBase)))
                                     RoundedRectangle(cornerRadius: 3)
-                                        .fill(Color.orange.opacity(0.8))
+                                        .fill(hovered == idx ? Color.orange : Color.orange.opacity(0.7))
                                         .frame(width: barW, height: barH)
                                 }
                             }
                             .padding(.horizontal, 4).padding(.bottom, 2)
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
                         } else {
-                            // Line + fill
+                            // ── Line chart ──
                             let pts: [CGPoint] = data.enumerated().map { i, pt in
-                                CGPoint(
-                                    x: data.count > 1 ? CGFloat(i) / CGFloat(data.count - 1) * (w - 8) + 4 : w / 2,
-                                    y: (h - 4) * (1 - CGFloat((pt.volume - yBase) / (maxVol * 1.05 - yBase))) + 2
-                                )
+                                CGPoint(x: xPos(index: i, width: w),
+                                        y: yPos(volume: pt.volume, height: h, yBase: yBase, yTop: yTop))
                             }
                             // Fill under line
                             Path { path in
@@ -475,24 +512,93 @@ struct HomeVolumeChart: View {
                             }
                             .fill(LinearGradient(colors: [Color.orange.opacity(0.25), .clear],
                                                   startPoint: .top, endPoint: .bottom))
-
+                            // Line
                             Path { path in
                                 for (i, pt) in pts.enumerated() {
                                     if i == 0 { path.move(to: pt) } else { path.addLine(to: pt) }
                                 }
                             }
                             .stroke(Color.orange, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+                        }
 
-                            // Dots on data points
-                            ForEach(Array(pts.enumerated()), id: \.offset) { _, pt in
-                                Circle().fill(Color.orange).frame(width: 5, height: 5)
-                                    .position(pt)
+                        // ── Hover indicator (dashed line + dot + tooltip) ──
+                        if let idx = hovered, idx < data.count {
+                            let dp = data[idx]
+                            let xP: CGFloat = {
+                                if isBar {
+                                    let barW = max(3, (w - 8) / CGFloat(max(data.count, 1)) - 2)
+                                    let totalSpacing = CGFloat(max(data.count - 1, 0)) * 2
+                                    let totalBars = CGFloat(data.count) * barW
+                                    let startX: CGFloat = 4 + (w - 8 - totalBars - totalSpacing) / 2
+                                    return startX + CGFloat(idx) * (barW + 2) + barW / 2
+                                } else {
+                                    return xPos(index: idx, width: w)
+                                }
+                            }()
+                            let yP: CGFloat = isBar
+                                ? h - max(3, (h - 4) * CGFloat((dp.volume - yBase) / (yTop - yBase))) - 2
+                                : yPos(volume: dp.volume, height: h, yBase: yBase, yTop: yTop)
+
+                            // Dashed vertical line
+                            Path { p in
+                                p.move(to: CGPoint(x: xP, y: 0))
+                                p.addLine(to: CGPoint(x: xP, y: h))
                             }
+                            .stroke(Color.gray.opacity(0.5),
+                                    style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+
+                            // Outer ring
+                            Circle()
+                                .stroke(Color.white.opacity(0.3), lineWidth: 2)
+                                .frame(width: 18, height: 18)
+                                .position(x: xP, y: yP)
+                            // Inner dot
+                            Circle()
+                                .fill(Color.orange)
+                                .frame(width: 8, height: 8)
+                                .position(x: xP, y: yP)
+
+                            // Floating tooltip card
+                            let tooltipW: CGFloat = 110
+                            let tooltipX = min(max(tooltipW/2 + 4, xP), w - tooltipW/2 - 4)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Volume")
+                                    .font(.system(size: 9)).foregroundColor(.gray)
+                                Text(dp.volume >= 1000 ? String(format: "%.1fk", dp.volume/1000) : "\(Int(dp.volume)) kg")
+                                    .font(.system(size: 18, weight: .black)).foregroundColor(.white)
+                                Divider().background(Color.white.opacity(0.15))
+                                Text(fullDateFormatter.string(from: dp.date))
+                                    .font(.system(size: 9)).foregroundColor(.gray)
+                            }
+                            .padding(.horizontal, 12).padding(.vertical, 10)
+                            .frame(width: tooltipW)
+                            .background(Color(hex: "1A1A1A"))
+                            .cornerRadius(12)
+                            .shadow(color: .black.opacity(0.5), radius: 10, y: 4)
+                            .position(x: tooltipX, y: max(42, yP - 55))
                         }
                     }
                     .cornerRadius(12)
+                    .contentShape(Rectangle())
+                    .gesture(
+                        DragGesture(minimumDistance: 0)
+                            .updating($isDragging) { _, state, _ in state = true }
+                            .onChanged { v in
+                                let idx = nearestIndex(x: v.location.x, width: w)
+                                if hovered != idx { hovered = idx }
+                            }
+                            .onEnded { _ in
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                                    withAnimation(.easeOut(duration: 0.3)) { hovered = nil }
+                                }
+                            }
+                    )
+                    .simultaneousGesture(
+                        TapGesture(count: 2).onEnded { onFullscreen?() }
+                    )
                 }
                 .frame(height: chartH)
+                .onChange(of: isBar) { _ in hovered = nil }
             }
 
             // X-axis labels
@@ -513,6 +619,25 @@ struct HomeVolumeChart: View {
                     }
                 }
                 .frame(height: xLabelH)
+            }
+
+            // Fullscreen hint
+            if onFullscreen != nil {
+                HStack {
+                    Spacer()
+                    Button(action: { onFullscreen?() }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "arrow.up.left.and.arrow.down.right")
+                                .font(.system(size: 10))
+                            Text("Fullscreen")
+                                .font(.system(size: 10, weight: .medium))
+                        }
+                        .foregroundColor(.gray)
+                        .padding(.horizontal, 10).padding(.vertical, 5)
+                        .background(Color(hex: "2C2C2C")).cornerRadius(8)
+                    }
+                }
+                .padding(.top, 6)
             }
         }
     }
@@ -707,5 +832,262 @@ struct FilterSheetView: View {
             }
         }
         .preferredColorScheme(.dark)
+    }
+}
+
+// MARK: - Fullscreen Landscape Chart View
+struct FullscreenChartView: View {
+    let data: [(date: Date, volume: Double)]
+    let title: String
+    let isBar: Bool
+    @Environment(\.dismiss) var dismiss
+
+    @State private var hovered: Int? = nil
+    @GestureState private var isDragging = false
+
+    var dateFormatter: DateFormatter {
+        let f = DateFormatter(); f.dateFormat = "d MMM"; return f
+    }
+    var fullDateFormatter: DateFormatter {
+        let f = DateFormatter(); f.dateFormat = "d MMM yyyy"; return f
+    }
+
+    func yLabels(min minVal: Double, max maxVal: Double) -> [Double] {
+        guard maxVal > minVal else { return [minVal] }
+        let step = ((maxVal - minVal) / 4).rounded(.up)
+        let nice = step <= 5 ? ceil(step/1)*1
+                 : step <= 10 ? ceil(step/5)*5
+                 : step <= 50 ? ceil(step/10)*10
+                 : step <= 200 ? ceil(step/50)*50
+                 : ceil(step/100)*100
+        let base = (minVal / nice).rounded(.down) * nice
+        return stride(from: base, through: maxVal * 1.05 + nice, by: nice).map { $0 }
+    }
+
+    func xLabels() -> [(Int, Date)] {
+        guard data.count > 1 else { return data.indices.map { ($0, data[$0].date) } }
+        let count = min(8, data.count)
+        let step = Double(data.count - 1) / Double(count - 1)
+        return (0..<count).map { i in
+            let idx = min(Int((Double(i) * step).rounded()), data.count - 1)
+            return (idx, data[idx].date)
+        }
+    }
+
+    func xPos(index: Int, width: CGFloat) -> CGFloat {
+        guard data.count > 1 else { return width / 2 }
+        return CGFloat(index) / CGFloat(data.count - 1) * (width - 12) + 6
+    }
+
+    func yPos(volume: Double, height: CGFloat, yBase: Double, yTop: Double) -> CGFloat {
+        (height - 6) * (1 - CGFloat((volume - yBase) / (yTop - yBase))) + 3
+    }
+
+    func nearestIndex(x: CGFloat, width: CGFloat) -> Int {
+        guard data.count > 1 else { return 0 }
+        let segW = (width - 12) / CGFloat(data.count - 1)
+        return max(0, min(data.count - 1, Int(((x - 6) / segW).rounded())))
+    }
+
+    var body: some View {
+        let minVol = data.map(\.volume).min() ?? 0
+        let maxVol = data.map(\.volume).max() ?? 1
+        let yLbls  = yLabels(min: minVol, max: maxVol)
+        let xLbls  = xLabels()
+        let yBase  = minVol * 0.95
+        let yTop   = maxVol * 1.05
+
+        ZStack {
+            Color(hex: "111111").ignoresSafeArea()
+
+            VStack(spacing: 0) {
+                // Header
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(title).font(.system(size: 18, weight: .bold)).foregroundColor(.white)
+                        Text("\(data.count) sessions").font(.system(size: 12)).foregroundColor(.gray)
+                    }
+                    Spacer()
+                    Button(action: { dismiss() }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 26))
+                            .foregroundColor(.gray)
+                    }
+                }
+                .padding(.horizontal, 20).padding(.top, 16).padding(.bottom, 12)
+
+                // Chart
+                HStack(alignment: .bottom, spacing: 0) {
+                    // Y labels
+                    VStack(alignment: .trailing, spacing: 0) {
+                        ForEach(yLbls.reversed(), id: \.self) { val in
+                            Text(val >= 1000 ? String(format: "%.0fk", val/1000) : "\(Int(val))")
+                                .font(.system(size: 10)).foregroundColor(.gray)
+                                .frame(maxHeight: .infinity, alignment: .center)
+                        }
+                    }
+                    .frame(width: 44)
+
+                    // Chart area
+                    GeometryReader { geo in
+                        let w = geo.size.width
+                        let h = geo.size.height
+
+                        ZStack {
+                            Color(hex: "1C1C1E")
+
+                            // Grid lines
+                            ForEach(yLbls, id: \.self) { val in
+                                let y = h * (1 - CGFloat((val - yBase) / (yTop - yBase)))
+                                Path { p in
+                                    p.move(to: CGPoint(x: 0, y: y))
+                                    p.addLine(to: CGPoint(x: w, y: y))
+                                }
+                                .stroke(Color.white.opacity(0.06), lineWidth: 0.5)
+                            }
+
+                            if isBar {
+                                let barW = max(4, (w - 12) / CGFloat(max(data.count, 1)) - 3)
+                                HStack(alignment: .bottom, spacing: 3) {
+                                    ForEach(Array(data.enumerated()), id: \.offset) { idx, pt in
+                                        let barH = max(3, (h - 6) * CGFloat((pt.volume - yBase) / (yTop - yBase)))
+                                        RoundedRectangle(cornerRadius: 4)
+                                            .fill(hovered == idx ? Color.orange : Color.orange.opacity(0.7))
+                                            .frame(width: barW, height: barH)
+                                    }
+                                }
+                                .padding(.horizontal, 6).padding(.bottom, 3)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                            } else {
+                                let pts: [CGPoint] = data.enumerated().map { i, pt in
+                                    CGPoint(x: xPos(index: i, width: w),
+                                            y: yPos(volume: pt.volume, height: h, yBase: yBase, yTop: yTop))
+                                }
+                                // Fill
+                                Path { path in
+                                    guard let first = pts.first, let last = pts.last else { return }
+                                    path.move(to: CGPoint(x: first.x, y: h))
+                                    path.addLine(to: first)
+                                    for pt in pts.dropFirst() { path.addLine(to: pt) }
+                                    path.addLine(to: CGPoint(x: last.x, y: h))
+                                }
+                                .fill(LinearGradient(colors: [Color.orange.opacity(0.3), .clear],
+                                                      startPoint: .top, endPoint: .bottom))
+                                // Line
+                                Path { path in
+                                    for (i, pt) in pts.enumerated() {
+                                        if i == 0 { path.move(to: pt) } else { path.addLine(to: pt) }
+                                    }
+                                }
+                                .stroke(Color.orange, style: StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
+                            }
+
+                            // ── Hover indicator ──
+                            if let idx = hovered, idx < data.count {
+                                let dp = data[idx]
+                                let xP = xPos(index: idx, width: w)
+                                let yP = isBar
+                                    ? h - max(3, (h - 6) * CGFloat((dp.volume - yBase) / (yTop - yBase))) - 3
+                                    : yPos(volume: dp.volume, height: h, yBase: yBase, yTop: yTop)
+
+                                // Dashed vertical line
+                                Path { p in
+                                    p.move(to: CGPoint(x: xP, y: 0))
+                                    p.addLine(to: CGPoint(x: xP, y: h))
+                                }
+                                .stroke(Color.gray.opacity(0.5),
+                                        style: StrokeStyle(lineWidth: 1, dash: [5, 3]))
+
+                                // Outer ring
+                                Circle()
+                                    .stroke(Color.white.opacity(0.3), lineWidth: 2.5)
+                                    .frame(width: 22, height: 22)
+                                    .position(x: xP, y: yP)
+                                // Inner dot
+                                Circle()
+                                    .fill(Color.orange)
+                                    .frame(width: 10, height: 10)
+                                    .position(x: xP, y: yP)
+
+                                // Floating tooltip
+                                let tooltipW: CGFloat = 140
+                                let tooltipX = min(max(tooltipW/2 + 6, xP), w - tooltipW/2 - 6)
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Text("Volume")
+                                        .font(.system(size: 10)).foregroundColor(.gray)
+                                    Text(dp.volume >= 1000 ? String(format: "%.1fk", dp.volume/1000) : "\(Int(dp.volume)) kg")
+                                        .font(.system(size: 22, weight: .black)).foregroundColor(.white)
+                                    Divider().background(Color.white.opacity(0.15))
+                                    Text(fullDateFormatter.string(from: dp.date))
+                                        .font(.system(size: 10)).foregroundColor(.gray)
+                                }
+                                .padding(.horizontal, 14).padding(.vertical, 12)
+                                .frame(width: tooltipW)
+                                .background(Color(hex: "1A1A1A"))
+                                .cornerRadius(14)
+                                .shadow(color: .black.opacity(0.6), radius: 12, y: 5)
+                                .position(x: tooltipX, y: max(50, yP - 65))
+                            }
+                        }
+                        .cornerRadius(14)
+                        .contentShape(Rectangle())
+                        .gesture(
+                            DragGesture(minimumDistance: 0)
+                                .updating($isDragging) { _, state, _ in state = true }
+                                .onChanged { v in
+                                    let idx = nearestIndex(x: v.location.x, width: w)
+                                    if hovered != idx { hovered = idx }
+                                }
+                                .onEnded { _ in
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                                        withAnimation(.easeOut(duration: 0.3)) { hovered = nil }
+                                    }
+                                }
+                        )
+                    }
+                }
+                .padding(.horizontal, 20)
+                .frame(maxHeight: .infinity)
+
+                // X labels
+                HStack(alignment: .top, spacing: 0) {
+                    Spacer().frame(width: 64)
+                    GeometryReader { geo in
+                        let w = geo.size.width
+                        ZStack(alignment: .topLeading) {
+                            ForEach(xLbls, id: \.0) { idx, date in
+                                let x = data.count > 1
+                                    ? CGFloat(idx) / CGFloat(data.count - 1) * (w - 12) + 6
+                                    : w / 2
+                                Text(dateFormatter.string(from: date))
+                                    .font(.system(size: 10)).foregroundColor(.gray)
+                                    .fixedSize().position(x: x, y: 8)
+                            }
+                        }
+                    }
+                    .frame(height: 24)
+                    Spacer().frame(width: 20)
+                }
+                .padding(.bottom, 16)
+            }
+        }
+        .preferredColorScheme(.dark)
+    }
+}
+
+// MARK: - Landscape orientation support
+struct LandscapeModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .onAppear {
+                let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene
+                windowScene?.requestGeometryUpdate(.iOS(interfaceOrientations: .landscape))
+                UIViewController.attemptRotationToDeviceOrientation()
+            }
+            .onDisappear {
+                let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene
+                windowScene?.requestGeometryUpdate(.iOS(interfaceOrientations: .all))
+                UIViewController.attemptRotationToDeviceOrientation()
+            }
     }
 }

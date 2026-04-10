@@ -4,6 +4,7 @@
 //
 
 import SwiftUI
+import AudioToolbox
 
 // MARK: - Log Tab Root
 struct LogView: View {
@@ -540,6 +541,7 @@ struct NewSessionView: View {
 
     @State private var showingExPicker   = false
     @State private var showingPlanPicker = false
+    @State private var restDuration      = 120   // seconds, default 2 min
     @FocusState private var anyFocused:  Bool
 
     var isEditing: Bool { existingSession != nil }
@@ -609,6 +611,9 @@ struct NewSessionView: View {
                             }
                             ForEach(Array(entries.indices), id: \.self) { idx in
                                 DraftLogCard(entry: $entries[idx]) { entries.remove(at: idx) }
+                                if idx < entries.count - 1 {
+                                    RestTimerBanner(defaultSeconds: $restDuration)
+                                }
                             }
                             Button(action: { showingExPicker = true }) {
                                 HStack {
@@ -751,8 +756,122 @@ struct DraftLog: Identifiable {
     }
 }
 
+
+
+// MARK: - Rest Timer Banner (between exercises in NewSessionView)
+struct RestTimerBanner: View {
+    @Binding var defaultSeconds: Int
+    @State private var isRunning    = false
+    @State private var remaining:   Int = 0
+    @State private var timer:       Timer? = nil
+    @State private var showPicker   = false
+
+    var progress: Double {
+        guard defaultSeconds > 0 else { return 0 }
+        return 1.0 - Double(remaining) / Double(defaultSeconds)
+    }
+
+    var timeString: String {
+        let m = remaining / 60; let s = remaining % 60
+        return String(format: "%d:%02d", m, s)
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            // Progress ring
+            ZStack {
+                Circle().stroke(Color.white.opacity(0.1), lineWidth: 3)
+                Circle().trim(from: 0, to: CGFloat(progress))
+                    .stroke(isRunning ? Color.orange : Color.gray.opacity(0.4),
+                            style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                    .animation(.linear(duration: 1), value: progress)
+                Image(systemName: isRunning ? "pause.fill" : "play.fill")
+                    .font(.system(size: 10))
+                    .foregroundColor(isRunning ? .orange : .gray)
+            }
+            .frame(width: 34, height: 34)
+            .onTapGesture { isRunning ? pause() : start() }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Rest")
+                    .font(.system(size: 11, weight: .semibold)).foregroundColor(.gray)
+                Text(isRunning || remaining > 0 ? timeString : "\(defaultSeconds / 60):\(String(format:"%02d", defaultSeconds % 60))")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundColor(isRunning ? .orange : .white)
+                    .monospacedDigit()
+            }
+
+            Spacer()
+
+            // Duration picker
+            Menu {
+                ForEach([30, 60, 90, 120, 180, 240, 300], id: \.self) { sec in
+                    Button("\(sec / 60):\(String(format: "%02d", sec % 60))") {
+                        defaultSeconds = sec
+                        if isRunning { reset(); start() }
+                        else { remaining = 0 }
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "timer").font(.system(size: 11))
+                    Text("\(defaultSeconds/60):\(String(format:"%02d", defaultSeconds%60))")
+                        .font(.system(size: 11, weight: .medium))
+                }
+                .foregroundColor(.gray)
+                .padding(.horizontal, 8).padding(.vertical, 5)
+                .background(Color.white.opacity(0.07)).cornerRadius(8)
+            }
+
+            // Reset
+            if isRunning || remaining > 0 {
+                Button(action: reset) {
+                    Image(systemName: "stop.fill").font(.system(size: 11)).foregroundColor(.gray)
+                }
+            }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 10)
+        .background(Color(hex: "161616"))
+        .cornerRadius(12)
+        .overlay(RoundedRectangle(cornerRadius: 12)
+            .stroke(Color.orange.opacity(isRunning ? 0.35 : 0.1), lineWidth: 1))
+    }
+
+    func start() {
+        if remaining == 0 { remaining = defaultSeconds }
+        isRunning = true
+        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
+            if remaining > 0 {
+                remaining -= 1
+            } else {
+                finish()
+            }
+        }
+    }
+
+    func pause() {
+        isRunning = false
+        timer?.invalidate(); timer = nil
+    }
+
+    func reset() {
+        pause(); remaining = 0
+    }
+
+    func finish() {
+        pause()
+        // Haptic + alert sound
+        let generator = UINotificationFeedbackGenerator()
+        generator.notificationOccurred(.success)
+        // System sound
+        AudioServicesPlaySystemSound(1005)
+        remaining = 0
+    }
+}
+
 struct DraftSet: Identifiable {
-    var id = UUID(); var weight: Double = 0; var reps: Int = 10
+    var id = UUID(); var weight: Double = 0; var reps: Int = 10; var maxReps: Int = 0  // 0 = no limit
 }
 
 // MARK: - Draft Log Card (keyboard dismiss on tap)
@@ -789,28 +908,54 @@ struct DraftLogCard: View {
                         .frame(width: 110).padding(.vertical, 6)
                         .background(Color.white.opacity(0.06)).cornerRadius(8)
                     Spacer()
-                    HStack(spacing: 10) {
+                    HStack(spacing: 8) {
                         Button(action: { if entry.sets[idx].reps > 1 { entry.sets[idx].reps -= 1 } }) {
                             Image(systemName: "minus").font(.system(size: 10)).foregroundColor(.orange)
                         }
-                        Text("\(entry.sets[idx].reps)")
-                            .font(.system(size: 14, weight: .semibold)).foregroundColor(.white).frame(width: 26)
-                        Button(action: { entry.sets[idx].reps += 1 }) {
-                            Image(systemName: "plus").font(.system(size: 10)).foregroundColor(.orange)
+                        VStack(spacing: 1) {
+                            Text("\(entry.sets[idx].reps)")
+                                .font(.system(size: 14, weight: .semibold)).foregroundColor(.white).frame(width: 26)
+                            if entry.sets[idx].maxReps > 0 {
+                                Text("/\(entry.sets[idx].maxReps)")
+                                    .font(.system(size: 9)).foregroundColor(.gray)
+                            }
                         }
-                    }.frame(width: 70, alignment: .trailing)
+                        Button(action: {
+                            let max = entry.sets[idx].maxReps
+                            if max == 0 || entry.sets[idx].reps < max {
+                                entry.sets[idx].reps += 1
+                            }
+                        }) {
+                            Image(systemName: "plus").font(.system(size: 10))
+                                .foregroundColor(entry.sets[idx].maxReps > 0 && entry.sets[idx].reps >= entry.sets[idx].maxReps ? .gray : .orange)
+                        }
+                    }.frame(width: 80, alignment: .trailing)
                 }
             }
 
             HStack {
-                Button(action: { entry.sets.append(DraftSet()) }) {
+                Button(action: { entry.sets.append(DraftSet(maxReps: entry.sets.first?.maxReps ?? 0)) }) {
                     Label("Add Set", systemImage: "plus").font(.system(size: 12)).foregroundColor(.orange)
                 }
                 Spacer()
+                // Max reps toggle
+                Menu {
+                    Button("No limit") { entry.sets.indices.forEach { entry.sets[$0].maxReps = 0 } }
+                    ForEach([6,8,10,12,15,20], id: \.self) { n in
+                        Button("Max \(n) reps") { entry.sets.indices.forEach { entry.sets[$0].maxReps = n } }
+                    }
+                } label: {
+                    let mx = entry.sets.first?.maxReps ?? 0
+                    HStack(spacing: 3) {
+                        Image(systemName: "arrow.up.to.line").font(.system(size: 10))
+                        Text(mx > 0 ? "Max \(mx)" : "Max reps")
+                            .font(.system(size: 11))
+                    }.foregroundColor(.gray)
+                }
                 if entry.sets.count > 1 {
                     Button(action: { entry.sets.removeLast() }) {
                         Label("Remove", systemImage: "minus").font(.system(size: 12)).foregroundColor(.red)
-                    }
+                    }.padding(.leading, 8)
                 }
             }
         }

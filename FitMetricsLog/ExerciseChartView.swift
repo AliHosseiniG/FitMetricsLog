@@ -1,3 +1,4 @@
+
 //
 //  ExerciseChartView.swift
 //  FitMetricsLog
@@ -15,6 +16,7 @@ struct ExerciseChartView: View {
 
     @State private var isBar  = false
     @State private var range: DateRange = .all
+    @State private var showFullscreen = false
 
     var data: [(date: Date, volume: Double)] {
         logStore.dailyVolumesForExercise(id: exercise.id, in: range)
@@ -107,7 +109,9 @@ struct ExerciseChartView: View {
                             .background(Color(hex: "1C1C1E")).cornerRadius(14)
                             .padding(.horizontal, 20)
                         } else {
-                            ExerciseVolumeChart(data: data, isBar: isBar)
+                            ExerciseVolumeChart(data: data, isBar: isBar, onFullscreen: {
+                                showFullscreen = true
+                            })
                                 .padding(.horizontal, 20)
                         }
 
@@ -120,6 +124,10 @@ struct ExerciseChartView: View {
             .navigationBarItems(trailing:
                 Button(L(.done)) { dismiss() }.foregroundColor(.orange)
             )
+            .fullScreenCover(isPresented: $showFullscreen) {
+                FullscreenChartView(data: data, title: exercise.name + " Volume", isBar: isBar)
+                    .modifier(LandscapeModifier())
+            }
         }
         .preferredColorScheme(.dark)
     }
@@ -146,6 +154,10 @@ struct ExerciseChartView: View {
 struct ExerciseVolumeChart: View {
     let data: [(date: Date, volume: Double)]
     let isBar: Bool
+    var onFullscreen: (() -> Void)? = nil
+
+    @State private var hovered: Int? = nil
+    @GestureState private var isDragging = false
 
     var minVol: Double { (data.map(\.volume).min() ?? 0) }
     var maxVol: Double { (data.map(\.volume).max() ?? 1) }
@@ -154,7 +166,6 @@ struct ExerciseVolumeChart: View {
         let pad = (maxVol - minVol) * 0.1
         return max(0, minVol - pad)
     }
-
     func yTop() -> Double { maxVol + (maxVol - minVol) * 0.1 + 1 }
 
     func yLabels() -> [Double] {
@@ -184,13 +195,32 @@ struct ExerciseVolumeChart: View {
     var dateFormatter: DateFormatter {
         let f = DateFormatter(); f.dateFormat = "d MMM"; return f
     }
+    var fullDateFormatter: DateFormatter {
+        let f = DateFormatter(); f.dateFormat = "d MMM yyyy"; return f
+    }
+
+    func xPos(index: Int, width: CGFloat) -> CGFloat {
+        guard data.count > 1 else { return width / 2 }
+        return CGFloat(index) / CGFloat(data.count - 1) * (width - 8) + 4
+    }
+
+    func yPos(volume: Double, height: CGFloat) -> CGFloat {
+        let lo = yBase(); let span = yTop() - lo
+        return (height - 4) * CGFloat(1 - (volume - lo) / span) + 2
+    }
+
+    func nearestIndex(x: CGFloat, width: CGFloat) -> Int {
+        guard data.count > 1 else { return 0 }
+        let segW = (width - 8) / CGFloat(data.count - 1)
+        return max(0, min(data.count - 1, Int(((x - 4) / segW).rounded())))
+    }
 
     var body: some View {
-        let ylbls  = yLabels()
-        let xlbls  = xLabels()
-        let lo     = yBase()
-        let hi     = yTop()
-        let ySpan  = hi - lo
+        let ylbls = yLabels()
+        let xlbls = xLabels()
+        let lo    = yBase()
+        let hi    = yTop()
+        let ySpan = hi - lo
         let yLW: CGFloat = 44
         let xLH: CGFloat = 18
 
@@ -218,24 +248,24 @@ struct ExerciseVolumeChart: View {
                             Path { p in p.move(to: .init(x: 0, y: y)); p.addLine(to: .init(x: w, y: y)) }
                                 .stroke(Color.white.opacity(0.07), lineWidth: 0.5)
                         }
+
                         if isBar {
-                            let bw = max(3, (w - 8) / CGFloat(max(data.count,1)) - 2)
+                            // ── Bar chart ──
+                            let bw = max(3, (w - 8) / CGFloat(max(data.count, 1)) - 2)
                             HStack(alignment: .bottom, spacing: 2) {
-                                ForEach(Array(data.enumerated()), id: \.offset) { _, pt in
-                                    let bh = max(3, (h-4) * CGFloat((pt.volume - lo) / ySpan))
+                                ForEach(Array(data.enumerated()), id: \.offset) { idx, pt in
+                                    let bh = max(3, (h - 4) * CGFloat((pt.volume - lo) / ySpan))
                                     RoundedRectangle(cornerRadius: 3)
-                                        .fill(Color.orange.opacity(0.85))
+                                        .fill(hovered == idx ? Color.orange : Color.orange.opacity(0.8))
                                         .frame(width: bw, height: bh)
                                 }
                             }
                             .padding(.horizontal, 4).padding(.bottom, 2)
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
                         } else {
+                            // ── Line chart ──
                             let pts: [CGPoint] = data.enumerated().map { i, pt in
-                                CGPoint(
-                                    x: data.count > 1 ? CGFloat(i)/CGFloat(data.count-1)*(w-8)+4 : w/2,
-                                    y: (h-4) * CGFloat(1-(pt.volume-lo)/ySpan) + 2
-                                )
+                                CGPoint(x: xPos(index: i, width: w), y: yPos(volume: pt.volume, height: h))
                             }
                             // Fill
                             Path { path in
@@ -254,15 +284,81 @@ struct ExerciseVolumeChart: View {
                                 }
                             }
                             .stroke(Color.orange, style: .init(lineWidth: 2, lineCap: .round, lineJoin: .round))
-                            // Dots
-                            ForEach(Array(pts.enumerated()), id: \.offset) { _, pt in
-                                Circle().fill(Color.orange).frame(width: 6, height: 6).position(pt)
+                        }
+
+                        // ── Hover indicator ──
+                        if let idx = hovered, idx < data.count {
+                            let dp = data[idx]
+                            let xP = xPos(index: idx, width: w)
+                            let yP: CGFloat = {
+                                if isBar {
+                                    let bh = max(3, (h - 4) * CGFloat((dp.volume - lo) / ySpan))
+                                    return h - bh - 2
+                                } else {
+                                    return yPos(volume: dp.volume, height: h)
+                                }
+                            }()
+
+                            // Dashed vertical line
+                            Path { p in
+                                p.move(to: CGPoint(x: xP, y: 0))
+                                p.addLine(to: CGPoint(x: xP, y: h))
                             }
+                            .stroke(Color.gray.opacity(0.5),
+                                    style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+
+                            // Outer ring
+                            Circle()
+                                .stroke(Color.white.opacity(0.3), lineWidth: 2)
+                                .frame(width: 20, height: 20)
+                                .position(x: xP, y: yP)
+                            // Inner dot
+                            Circle()
+                                .fill(Color.orange)
+                                .frame(width: 9, height: 9)
+                                .position(x: xP, y: yP)
+
+                            // Floating tooltip card
+                            let tooltipW: CGFloat = 120
+                            let tooltipX = min(max(tooltipW/2 + 4, xP), w - tooltipW/2 - 4)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Volume")
+                                    .font(.system(size: 9)).foregroundColor(.gray)
+                                Text(dp.volume >= 1000 ? String(format: "%.1fk", dp.volume/1000) : "\(Int(dp.volume)) kg")
+                                    .font(.system(size: 20, weight: .black)).foregroundColor(.white)
+                                Divider().background(Color.white.opacity(0.15))
+                                Text(fullDateFormatter.string(from: dp.date))
+                                    .font(.system(size: 9)).foregroundColor(.gray)
+                            }
+                            .padding(.horizontal, 12).padding(.vertical, 10)
+                            .frame(width: tooltipW)
+                            .background(Color(hex: "1A1A1A"))
+                            .cornerRadius(12)
+                            .shadow(color: .black.opacity(0.5), radius: 10, y: 4)
+                            .position(x: tooltipX, y: max(48, yP - 60))
                         }
                     }
                     .cornerRadius(12)
+                    .contentShape(Rectangle())
+                    .gesture(
+                        DragGesture(minimumDistance: 0)
+                            .updating($isDragging) { _, state, _ in state = true }
+                            .onChanged { v in
+                                let idx = nearestIndex(x: v.location.x, width: w)
+                                if hovered != idx { hovered = idx }
+                            }
+                            .onEnded { _ in
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                                    withAnimation(.easeOut(duration: 0.3)) { hovered = nil }
+                                }
+                            }
+                    )
+                    .simultaneousGesture(
+                        TapGesture(count: 2).onEnded { onFullscreen?() }
+                    )
                 }
                 .frame(height: 200)
+                .onChange(of: isBar) { _ in hovered = nil }
             }
             // X labels
             HStack(alignment: .top, spacing: 0) {
@@ -280,6 +376,25 @@ struct ExerciseVolumeChart: View {
                     }
                 }
                 .frame(height: xLH)
+            }
+
+            // Fullscreen button
+            if onFullscreen != nil {
+                HStack {
+                    Spacer()
+                    Button(action: { onFullscreen?() }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "arrow.up.left.and.arrow.down.right")
+                                .font(.system(size: 10))
+                            Text("Fullscreen")
+                                .font(.system(size: 10, weight: .medium))
+                        }
+                        .foregroundColor(.gray)
+                        .padding(.horizontal, 10).padding(.vertical, 5)
+                        .background(Color(hex: "2C2C2C")).cornerRadius(8)
+                    }
+                }
+                .padding(.top, 6)
             }
         }
     }
