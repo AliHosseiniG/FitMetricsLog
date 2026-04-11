@@ -93,6 +93,9 @@ struct WorkoutPlanListView: View {
                                             Button { quickEdit = plan } label: {
                                                 Label(L(.edit), systemImage: "pencil")
                                             }
+                                            Button { duplicatePlan(plan) } label: {
+                                                Label(L(.duplicateSession), systemImage: "doc.on.doc")
+                                            }
                                             Divider()
                                             Button(role: .destructive) { planStore.delete(plan) } label: {
                                                 Label(L(.delete), systemImage: "trash")
@@ -137,6 +140,14 @@ struct WorkoutPlanListView: View {
 
     func togglePlan(_ id: UUID) {
         if selectedIDs.contains(id) { selectedIDs.remove(id) } else { selectedIDs.insert(id) }
+    }
+    func duplicatePlan(_ plan: WorkoutPlan) {
+        var copy = plan
+        copy.id = UUID()
+        copy.name = plan.name + " (Copy)"
+        copy.createdAt = Date()
+        copy.items = copy.items.map { var item = $0; item.id = UUID(); return item }
+        planStore.add(copy)
     }
     func deleteSelected() {
         for id in selectedIDs {
@@ -341,6 +352,8 @@ struct PlanDetailView: View {
                     Spacer()
                     Menu {
                         Button("Edit", systemImage: "pencil")               { showingEdit = true }
+                        Button(L(.duplicateSession), systemImage: "doc.on.doc") { duplicatePlan() }
+                        Divider()
                         Button(L(.delete), systemImage: "trash", role: .destructive) { showingDelete = true }
                     } label: {
                         Image(systemName: "ellipsis")
@@ -369,6 +382,15 @@ struct PlanDetailView: View {
             Button("Delete", role: .destructive) { planStore.delete(plan); dismiss() }
             Button(L(.cancel), role: .cancel) {}
         }
+    }
+
+    func duplicatePlan() {
+        var copy = live
+        copy.id = UUID()
+        copy.name = live.name + " (Copy)"
+        copy.createdAt = Date()
+        copy.items = copy.items.map { var item = $0; item.id = UUID(); return item }
+        planStore.add(copy)
     }
 }
 
