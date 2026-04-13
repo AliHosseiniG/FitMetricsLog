@@ -268,6 +268,11 @@ struct ProfileView: View {
         UserProfileStore.shared.userName  = "Athlete"
         UserProfileStore.shared.avatarData = nil
         UserProfileStore.shared.save()
+        // Clear max reps storage
+        UserDefaults.standard.removeObject(forKey: "exercise_max_reps_v1")
+        // Clear muscle group customizations
+        UserDefaults.standard.removeObject(forKey: "hiddenBuiltIns_v1")
+        MuscleGroupManager.shared.clearCustomizations()
     }
 
     var profileContent: some View {

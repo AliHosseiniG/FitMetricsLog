@@ -13,6 +13,7 @@
 import SwiftUI
 import UIKit
 import Combine
+import AVFoundation
 
 // MARK: - MuscleGroup (struct — supports built-in + custom)
 struct MuscleGroup: Identifiable, Codable, Hashable {
@@ -52,6 +53,7 @@ struct Exercise: Identifiable, Codable {
     var reps:            Int
     var imageDatas:      [Data]   = []
     var videoURL:        String   = ""
+    var localVideoFileName: String = ""   // file in Documents/ExerciseVideos/
     var createdAt:       Date     = Date()
     var tags:            [String] = []
     var customColorHex:  String?  = nil
@@ -104,7 +106,7 @@ class ExerciseStore: ObservableObject {
         exercises[i] = e; save()
     }
     func updateExercise(_ e: Exercise) { update(e) }
-    func delete(_ e: Exercise)         { exercises.removeAll { $0.id == e.id }; save() }
+    func delete(_ e: Exercise)         { VideoFileManager.delete(e.localVideoFileName); exercises.removeAll { $0.id == e.id }; save() }
     func deleteExercise(_ e: Exercise) { delete(e) }
     func delete(at offsets: IndexSet)  { exercises.remove(atOffsets: offsets); save() }
     func clearAll() { exercises = []; save() }
@@ -156,6 +158,59 @@ class ExerciseStore: ObservableObject {
                 return
             }
         }
+    }
+}
+
+// MARK: - Video File Manager
+enum VideoFileManager {
+    private static var videosDir: URL {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let dir = docs.appendingPathComponent("ExerciseVideos", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    static func save(_ data: Data, fileName: String? = nil) -> String {
+        let name = fileName ?? "\(UUID().uuidString).mov"
+        let url = videosDir.appendingPathComponent(name)
+        try? data.write(to: url)
+        return name
+    }
+
+    static func save(from sourceURL: URL) -> String? {
+        let name = "\(UUID().uuidString).\(sourceURL.pathExtension.isEmpty ? "mov" : sourceURL.pathExtension)"
+        let dest = videosDir.appendingPathComponent(name)
+        do {
+            if FileManager.default.fileExists(atPath: dest.path) {
+                try FileManager.default.removeItem(at: dest)
+            }
+            try FileManager.default.copyItem(at: sourceURL, to: dest)
+            return name
+        } catch { return nil }
+    }
+
+    static func url(for fileName: String) -> URL? {
+        guard !fileName.isEmpty else { return nil }
+        let url = videosDir.appendingPathComponent(fileName)
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+
+    static func delete(_ fileName: String) {
+        guard !fileName.isEmpty else { return }
+        let url = videosDir.appendingPathComponent(fileName)
+        try? FileManager.default.removeItem(at: url)
+    }
+
+    static func thumbnail(for fileName: String) -> UIImage? {
+        guard let url = url(for: fileName) else { return nil }
+        let asset = AVAsset(url: url)
+        let gen = AVAssetImageGenerator(asset: asset)
+        gen.appliesPreferredTrackTransform = true
+        gen.maximumSize = CGSize(width: 300, height: 300)
+        if let cgImg = try? gen.copyCGImage(at: .zero, actualTime: nil) {
+            return UIImage(cgImage: cgImg)
+        }
+        return nil
     }
 }
 

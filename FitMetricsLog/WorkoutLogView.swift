@@ -5,6 +5,7 @@
 
 import SwiftUI
 import AudioToolbox
+import AVKit
 
 // MARK: - Log Tab Root
 struct LogView: View {
@@ -414,10 +415,18 @@ struct SessCell: View {
     }
 }
 
+struct FullscreenImageWrapper: Identifiable {
+    let index: Int
+    var id: Int { index }
+}
+
 struct ExLogCard: View {
     let log: WorkoutLog
     var onChart: (() -> Void)? = nil
     var onToggleComplete: (() -> Void)? = nil
+    @EnvironmentObject var exerciseStore: ExerciseStore
+    @State private var fullscreenImageIndex: Int? = nil
+    @State private var showVideoPlayer = false
     var body: some View {
         let liveG = MuscleGroupManager.shared.liveGroup(for: log.muscleGroup.id) ?? log.muscleGroup
         VStack(alignment: .leading, spacing: 12) {
@@ -434,6 +443,15 @@ struct ExLogCard: View {
                         Image(systemName: liveG.icon)
                             .font(.system(size: 18)).foregroundColor(liveG.color)
                     }
+                }
+                // Row number badge
+                if log.rowNumber > 0 {
+                    Text("\(log.rowNumber)")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(.orange)
+                        .frame(width: 24, height: 24)
+                        .background(Color.orange.opacity(0.12))
+                        .cornerRadius(6)
                 }
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
@@ -487,7 +505,12 @@ struct ExLogCard: View {
                     Spacer()
                     Text(String(format: "%.1f kg", s.weight)).frame(width: 90, alignment: .center).foregroundColor(.white)
                     Spacer()
-                    Text("\(s.reps)").frame(width: 50, alignment: .trailing).foregroundColor(.white)
+                    HStack(spacing: 1) {
+                        Text("\(s.reps)").foregroundColor(.white)
+                        if s.maxReps > 0 {
+                            Text("/\(s.maxReps)").foregroundColor(.gray)
+                        }
+                    }.frame(width: 50, alignment: .trailing)
                 }
                 .font(.system(size: 13))
                 .padding(.vertical, 4).padding(.horizontal, 8)
@@ -498,21 +521,58 @@ struct ExLogCard: View {
                 Text("Est. 1RM: \(Int(log.estimatedOneRepMax)) kg")
                     .font(.system(size: 11)).foregroundColor(.gray)
             }
-            // Exercise images gallery (all photos)
+            // Exercise images gallery (all photos) — double-tap for fullscreen
             let allImgs = log.allImages
             if !allImgs.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
-                        ForEach(Array(allImgs.enumerated()), id: \.offset) { _, img in
+                        ForEach(Array(allImgs.enumerated()), id: \.offset) { idx, img in
                             Image(uiImage: img).resizable().scaledToFill()
                                 .frame(width: allImgs.count == 1 ? 220 : 120, height: 90)
                                 .clipped().cornerRadius(10)
+                                .onTapGesture(count: 2) { fullscreenImageIndex = idx }
                         }
                     }
                 }.padding(.top, 4)
             }
+            // Exercise video thumbnail
+            if let ex = exerciseStore.exercises.first(where: { $0.id == log.exerciseId }),
+               !ex.localVideoFileName.isEmpty,
+               let _ = VideoFileManager.url(for: ex.localVideoFileName) {
+                Button(action: { showVideoPlayer = true }) {
+                    ZStack {
+                        if let thumb = VideoFileManager.thumbnail(for: ex.localVideoFileName) {
+                            Image(uiImage: thumb).resizable().scaledToFill()
+                                .frame(maxWidth: .infinity, maxHeight: 120).clipped().cornerRadius(10)
+                        } else {
+                            RoundedRectangle(cornerRadius: 10).fill(Color(hex: "2C2C2C"))
+                                .frame(maxWidth: .infinity, maxHeight: 120)
+                        }
+                        Image(systemName: "play.circle.fill")
+                            .font(.system(size: 36)).foregroundColor(.white.opacity(0.9))
+                            .shadow(color: .black.opacity(0.5), radius: 4)
+                    }
+                }
+                .padding(.top, 4)
+            }
         }
         .padding(14).background(Color(hex: "1C1C1E")).cornerRadius(14)
+        .fullScreenCover(isPresented: $showVideoPlayer) {
+            if let ex = exerciseStore.exercises.first(where: { $0.id == log.exerciseId }),
+               let url = VideoFileManager.url(for: ex.localVideoFileName) {
+                VideoPlayerFullscreen(url: url) { showVideoPlayer = false }
+            }
+        }
+        .fullScreenCover(item: Binding(
+            get: { fullscreenImageIndex.map { FullscreenImageWrapper(index: $0) } },
+            set: { fullscreenImageIndex = $0?.index }
+        )) { wrapper in
+            FullscreenImageViewer(
+                images: log.allImages,
+                startIndex: wrapper.index,
+                onDismiss: { fullscreenImageIndex = nil }
+            )
+        }
         .contextMenu {
             if let onChart {
                 Button(action: onChart) {
@@ -543,6 +603,9 @@ struct NewSessionView: View {
     @State private var showingPlanPicker = false
     @State private var restDuration      = 120   // seconds, default 2 min
     @FocusState private var anyFocused:  Bool
+    @State private var autosaveTimer: Timer? = nil
+    @State private var lastAutosave: Date? = nil
+    @State private var autosavedSessionId: UUID? = nil
 
     var isEditing: Bool { existingSession != nil }
 
@@ -663,7 +726,21 @@ struct NewSessionView: View {
             }
             .navigationTitle(isEditing ? L(.editSession) : L(.logSession))
             .navigationBarTitleDisplayMode(.inline)
-            .navigationBarItems(leading: Button(L(.cancel)) { dismiss() }.foregroundColor(.orange))
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button(L(.cancel)) { dismiss() }.foregroundColor(.orange)
+                }
+                ToolbarItem(placement: .principal) {
+                    VStack(spacing: 1) {
+                        Text(isEditing ? L(.editSession) : L(.logSession))
+                            .font(.system(size: 16, weight: .semibold)).foregroundColor(.white)
+                        if let last = lastAutosave {
+                            Text("Autosaved \(last.formatted(date: .omitted, time: .shortened))")
+                                .font(.system(size: 9)).foregroundColor(.green.opacity(0.7))
+                        }
+                    }
+                }
+            }
             .sheet(isPresented: $showingExPicker) {
                 LogExercisePickerView(exercises: exerciseStore.exercises) { ex in
                     entries.append(DraftLog(exercise: ex))
@@ -678,7 +755,59 @@ struct NewSessionView: View {
             }
         }
         .preferredColorScheme(.dark)
-        .onAppear { prefill() }
+        .onAppear {
+            prefill()
+            startAutosave()
+        }
+        .onDisappear {
+            autosaveTimer?.invalidate()
+            autosaveTimer = nil
+        }
+    }
+
+    func startAutosave() {
+        autosaveTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { _ in
+            autosave()
+        }
+    }
+
+    func autosave() {
+        let logs: [WorkoutLog] = entries.compactMap { d in
+            guard !d.sets.isEmpty else { return nil }
+            let ex = exerciseStore.exercises.first { $0.id == d.exerciseId }
+            let imgDatas = (ex?.imageDatas ?? []).map { resizedData($0, maxDimension: 600) }
+            return WorkoutLog(exerciseId: d.exerciseId, exerciseName: d.exerciseName,
+                              muscleGroup: d.muscleGroup, date: sessionDate,
+                              sets: d.sets.enumerated().map { i, s in
+                                  WorkoutSet(setNumber: i+1, weight: s.weight, reps: s.reps, maxReps: s.maxReps)
+                              },
+                              exerciseImageData: imgDatas.first,
+                              exerciseImageDatas: imgDatas,
+                              rowNumber: d.rowNumber)
+        }
+        guard !logs.isEmpty else { return }
+        if let e = existingSession {
+            var updated = e
+            updated.date = sessionDate; updated.durationMinutes = durationMinutes
+            updated.sessionNotes = sessionNotes; updated.logs = logs
+            logStore.updateSession(updated)
+        } else if let savedId = autosavedSessionId,
+                  logStore.sessions.contains(where: { $0.id == savedId }) {
+            // Update the previously autosaved new session
+            var updated = WorkoutSession(date: sessionDate, logs: logs)
+            updated.id = savedId
+            updated.durationMinutes = durationMinutes; updated.sessionNotes = sessionNotes
+            updated.sourcePlanId = prefillPlan?.id; updated.sourcePlanName = prefillPlan?.name
+            logStore.updateSession(updated)
+        } else {
+            // First autosave for a new session
+            var s = WorkoutSession(date: sessionDate, logs: logs)
+            s.durationMinutes = durationMinutes; s.sessionNotes = sessionNotes
+            s.sourcePlanId = prefillPlan?.id; s.sourcePlanName = prefillPlan?.name
+            logStore.addSession(s)
+            autosavedSessionId = s.id
+        }
+        lastAutosave = Date()
     }
 
     func prefill() {
@@ -686,7 +815,9 @@ struct NewSessionView: View {
             sessionDate = s.date; durationMinutes = s.durationMinutes; sessionNotes = s.sessionNotes
             entries = s.logs.map { log in
                 var d = DraftLog(exerciseId: log.exerciseId, exerciseName: log.exerciseName, muscleGroup: log.muscleGroup)
-                d.sets = log.sets.map { DraftSet(weight: $0.weight, reps: $0.reps) }
+                let savedMax = MaxRepsStore.get(for: log.exerciseId)
+                d.sets = log.sets.map { DraftSet(weight: $0.weight, reps: $0.reps, maxReps: $0.maxReps > 0 ? $0.maxReps : savedMax) }
+                d.rowNumber = log.rowNumber
                 return d
             }
         } else if let p = prefillPlan {
@@ -707,6 +838,8 @@ struct NewSessionView: View {
     }
 
     func save() {
+        autosaveTimer?.invalidate()
+        autosaveTimer = nil
         let logs: [WorkoutLog] = entries.compactMap { d in
             guard !d.sets.isEmpty else { return nil }
             let ex = exerciseStore.exercises.first { $0.id == d.exerciseId }
@@ -714,16 +847,25 @@ struct NewSessionView: View {
             return WorkoutLog(exerciseId: d.exerciseId, exerciseName: d.exerciseName,
                               muscleGroup: d.muscleGroup, date: sessionDate,
                               sets: d.sets.enumerated().map { i, s in
-                                  WorkoutSet(setNumber: i+1, weight: s.weight, reps: s.reps)
+                                  WorkoutSet(setNumber: i+1, weight: s.weight, reps: s.reps, maxReps: s.maxReps)
                               },
                               exerciseImageData: imgDatas.first,
-                              exerciseImageDatas: imgDatas)
+                              exerciseImageDatas: imgDatas,
+                              rowNumber: d.rowNumber)
         }
         guard !logs.isEmpty else { dismiss(); return }
         if var e = existingSession {
             e.date = sessionDate; e.durationMinutes = durationMinutes
             e.sessionNotes = sessionNotes; e.logs = logs
             logStore.updateSession(e)
+        } else if let savedId = autosavedSessionId,
+                  logStore.sessions.contains(where: { $0.id == savedId }) {
+            // Update the autosaved session instead of creating a new one
+            var updated = WorkoutSession(date: sessionDate, logs: logs)
+            updated.id = savedId
+            updated.durationMinutes = durationMinutes; updated.sessionNotes = sessionNotes
+            updated.sourcePlanId = prefillPlan?.id; updated.sourcePlanName = prefillPlan?.name
+            logStore.updateSession(updated)
         } else {
             var s = WorkoutSession(date: sessionDate, logs: logs)
             s.durationMinutes = durationMinutes; s.sessionNotes = sessionNotes
@@ -735,6 +877,24 @@ struct NewSessionView: View {
     }
 }
 
+// MARK: - Max Reps Storage (per exercise, persisted)
+enum MaxRepsStore {
+    private static let key = "exercise_max_reps_v1"
+    static func get(for exerciseId: UUID) -> Int {
+        let dict = UserDefaults.standard.dictionary(forKey: key) as? [String: Int] ?? [:]
+        return dict[exerciseId.uuidString] ?? 0
+    }
+    static func set(_ value: Int, for exerciseId: UUID) {
+        var dict = UserDefaults.standard.dictionary(forKey: key) as? [String: Int] ?? [:]
+        if value > 0 {
+            dict[exerciseId.uuidString] = value
+        } else {
+            dict.removeValue(forKey: exerciseId.uuidString)
+        }
+        UserDefaults.standard.set(dict, forKey: key)
+    }
+}
+
 // MARK: - Draft models
 struct DraftLog: Identifiable {
     var id = UUID()
@@ -742,16 +902,22 @@ struct DraftLog: Identifiable {
     var exerciseName: String
     var muscleGroup:  MuscleGroup
     var sets: [DraftSet] = [DraftSet()]
+    var rowNumber: Int = 0
 
     init(exercise: Exercise) {
         exerciseId = exercise.id; exerciseName = exercise.name; muscleGroup = exercise.muscleGroup
+        let savedMax = MaxRepsStore.get(for: exercise.id)
+        if savedMax > 0 { sets = [DraftSet(maxReps: savedMax)] }
     }
     init(exerciseId: UUID, exerciseName: String, muscleGroup: MuscleGroup) {
         self.exerciseId = exerciseId; self.exerciseName = exerciseName; self.muscleGroup = muscleGroup
+        let savedMax = MaxRepsStore.get(for: exerciseId)
+        if savedMax > 0 { sets = [DraftSet(maxReps: savedMax)] }
     }
     init(planItem: PlanExerciseItem) {
         exerciseId = planItem.exerciseId; exerciseName = planItem.exerciseName; muscleGroup = planItem.muscleGroup
-        sets = Array(repeating: DraftSet(weight: planItem.targetWeight, reps: planItem.targetReps),
+        let savedMax = MaxRepsStore.get(for: planItem.exerciseId)
+        sets = Array(repeating: DraftSet(weight: planItem.targetWeight, reps: planItem.targetReps, maxReps: savedMax),
                      count: max(1, planItem.targetSets))
     }
 }
@@ -884,6 +1050,15 @@ struct DraftLogCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
+                // Row number input
+                TextField("#", value: $entry.rowNumber, format: .number)
+                    .keyboardType(.numberPad)
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundColor(.orange)
+                    .multilineTextAlignment(.center)
+                    .frame(width: 32, height: 28)
+                    .background(Color.orange.opacity(0.12))
+                    .cornerRadius(7)
                 Image(systemName: entry.muscleGroup.icon).foregroundColor(entry.muscleGroup.color)
                 Text(entry.exerciseName).font(.system(size: 14, weight: .semibold)).foregroundColor(.white)
                 Spacer()
@@ -938,11 +1113,17 @@ struct DraftLogCard: View {
                     Label("Add Set", systemImage: "plus").font(.system(size: 12)).foregroundColor(.orange)
                 }
                 Spacer()
-                // Max reps toggle
+                // Max reps toggle (saved per exercise)
                 Menu {
-                    Button("No limit") { entry.sets.indices.forEach { entry.sets[$0].maxReps = 0 } }
+                    Button("No limit") {
+                        entry.sets.indices.forEach { entry.sets[$0].maxReps = 0 }
+                        MaxRepsStore.set(0, for: entry.exerciseId)
+                    }
                     ForEach([6,8,10,12,15,20], id: \.self) { n in
-                        Button("Max \(n) reps") { entry.sets.indices.forEach { entry.sets[$0].maxReps = n } }
+                        Button("Max \(n) reps") {
+                            entry.sets.indices.forEach { entry.sets[$0].maxReps = n }
+                            MaxRepsStore.set(n, for: entry.exerciseId)
+                        }
                     }
                 } label: {
                     let mx = entry.sets.first?.maxReps ?? 0

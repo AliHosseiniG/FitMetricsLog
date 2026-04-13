@@ -4,6 +4,7 @@
 //
 
 import SwiftUI
+import AVKit
 
 // MARK: - Exercise List
 struct ExerciseListView: View {
@@ -214,6 +215,7 @@ struct ExerciseDetailView: View {
     @State private var showingEdit       = false
     @State private var showingDelete     = false
     @State private var fullscreenIndex: Int? = nil   // nil = hidden
+    @State private var showVideoPlayer   = false
 
     var live: Exercise {
         exerciseStore.exercises.first { $0.id == exercise.id } ?? exercise
@@ -232,7 +234,7 @@ struct ExerciseDetailView: View {
                         if !live.description.isEmpty      { descSection }
                         if !live.tags.isEmpty             { tagsSection }
                         muscleSection
-                        if !live.videoURL.isEmpty         { videoSection }
+                        if !live.localVideoFileName.isEmpty || !live.videoURL.isEmpty { videoSection }
                         if !live.images.isEmpty           { gallerySection }
                         Spacer(minLength: 120)
                     }
@@ -290,6 +292,11 @@ struct ExerciseDetailView: View {
             AddExerciseView(exerciseToEdit: live)
                 .environmentObject(exerciseStore)
                 .environmentObject(logStore)
+        }
+        .fullScreenCover(isPresented: $showVideoPlayer) {
+            if let url = VideoFileManager.url(for: live.localVideoFileName) {
+                VideoPlayerFullscreen(url: url) { showVideoPlayer = false }
+            }
         }
         .alert(L(.deleteExercise), isPresented: $showingDelete) {
             Button("Delete", role: .destructive) {
@@ -407,32 +414,53 @@ struct ExerciseDetailView: View {
         }
     }
 
-    // Video: taps open Safari / YouTube etc.
+    // Video section: local video + external URL
     var videoSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            SectionTitle("Tutorial Video")
-            Button(action: {
-                let raw    = live.videoURL
-                let urlStr = raw.hasPrefix("http") ? raw : "https://\(raw)"
-                if let url = URL(string: urlStr) {
-                    UIApplication.shared.open(url)
-                }
-            }) {
-                HStack(spacing: 12) {
-                    Image(systemName: "play.circle.fill")
-                        .font(.system(size: 36)).foregroundColor(.orange)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(L(.watchVideo))
-                            .font(.system(size: 14, weight: .semibold)).foregroundColor(.white)
-                        Text(live.videoURL)
-                            .font(.system(size: 11)).foregroundColor(.gray).lineLimit(1)
+            SectionTitle("Video")
+            // Local video
+            if !live.localVideoFileName.isEmpty,
+               let _ = VideoFileManager.url(for: live.localVideoFileName) {
+                Button(action: { showVideoPlayer = true }) {
+                    ZStack {
+                        if let thumb = VideoFileManager.thumbnail(for: live.localVideoFileName) {
+                            Image(uiImage: thumb).resizable().scaledToFill()
+                                .frame(maxWidth: .infinity, maxHeight: 200).clipped().cornerRadius(12)
+                        } else {
+                            RoundedRectangle(cornerRadius: 12).fill(Color(hex: "1C1C1E"))
+                                .frame(maxWidth: .infinity, maxHeight: 200)
+                        }
+                        Image(systemName: "play.circle.fill")
+                            .font(.system(size: 50)).foregroundColor(.white.opacity(0.9))
+                            .shadow(color: .black.opacity(0.5), radius: 6)
                     }
-                    Spacer()
-                    Image(systemName: "arrow.up.right")
-                        .font(.system(size: 13)).foregroundColor(.orange)
                 }
-                .padding(14)
-                .background(Color(hex: "1C1C1E")).cornerRadius(12)
+            }
+            // External URL
+            if !live.videoURL.isEmpty {
+                Button(action: {
+                    let raw    = live.videoURL
+                    let urlStr = raw.hasPrefix("http") ? raw : "https://\(raw)"
+                    if let url = URL(string: urlStr) {
+                        UIApplication.shared.open(url)
+                    }
+                }) {
+                    HStack(spacing: 12) {
+                        Image(systemName: "play.circle.fill")
+                            .font(.system(size: 36)).foregroundColor(.orange)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(L(.watchVideo))
+                                .font(.system(size: 14, weight: .semibold)).foregroundColor(.white)
+                            Text(live.videoURL)
+                                .font(.system(size: 11)).foregroundColor(.gray).lineLimit(1)
+                        }
+                        Spacer()
+                        Image(systemName: "arrow.up.right")
+                            .font(.system(size: 13)).foregroundColor(.orange)
+                    }
+                    .padding(14)
+                    .background(Color(hex: "1C1C1E")).cornerRadius(12)
+                }
             }
         }
     }

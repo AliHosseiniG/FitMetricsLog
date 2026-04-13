@@ -14,6 +14,7 @@ struct WorkoutSet: Identifiable, Codable {
     var weight:    Double
     var reps:      Int
     var notes:     String = ""
+    var maxReps:   Int    = 0   // 0 = no limit
 }
 
 // MARK: - WorkoutLog
@@ -28,10 +29,12 @@ struct WorkoutLog: Identifiable, Codable {
     var isCompleted:       Bool   = false   // checkbox state
     var exerciseImageData: Data? = nil     // snapshot of exercise photo (first)
     var exerciseImageDatas: [Data] = []    // all exercise photos
+    var rowNumber: Int = 0                 // manual row/order number entered by user
 
     init(exerciseId: UUID, exerciseName: String,
          muscleGroup: MuscleGroup, date: Date, sets: [WorkoutSet],
-         exerciseImageData: Data? = nil, exerciseImageDatas: [Data] = []) {
+         exerciseImageData: Data? = nil, exerciseImageDatas: [Data] = [],
+         rowNumber: Int = 0) {
         self.id                  = UUID()
         self.exerciseId          = exerciseId
         self.exerciseName        = exerciseName
@@ -40,6 +43,7 @@ struct WorkoutLog: Identifiable, Codable {
         self.sets                = sets
         self.exerciseImageData   = exerciseImageData
         self.exerciseImageDatas  = exerciseImageDatas.isEmpty ? (exerciseImageData.map { [$0] } ?? []) : exerciseImageDatas
+        self.rowNumber           = rowNumber
     }
 
     var allImages: [UIImage] { exerciseImageDatas.compactMap { UIImage(data: $0) } }

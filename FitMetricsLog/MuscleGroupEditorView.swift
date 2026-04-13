@@ -119,6 +119,14 @@ class MuscleGroupManager: ObservableObject {
         rebuildGroups()
     }
 
+    func clearCustomizations() {
+        overrides.removeAll()
+        UserDefaults.standard.removeObject(forKey: customKey)
+        UserDefaults.standard.removeObject(forKey: overrideKey)
+        UserDefaults.standard.removeObject(forKey: "hiddenBuiltIns_v1")
+        rebuildGroups()
+    }
+
     // MARK: - Storage
     private func customFromStore() -> [MuscleGroup] {
         guard let data = UserDefaults.standard.data(forKey: customKey),
@@ -150,6 +158,7 @@ struct MuscleGroupEditorView: View {
     @State private var showingAdd               = false
     @State private var deleteTarget: MuscleGroup? = nil
     @State private var showDeleteAlert          = false
+    @State private var fullscreenImage: UIImage? = nil
 
     var builtIn: [MuscleGroup] { manager.groups.filter { g in MuscleGroup.builtIn.contains { $0.id == g.id } } }
     var custom:  [MuscleGroup] { manager.groups.filter { g in !MuscleGroup.builtIn.contains { $0.id == g.id } } }
@@ -246,6 +255,17 @@ struct MuscleGroupEditorView: View {
                 Text(L(.noAffectLogs))
             }
         }
+        .overlay {
+            if let img = fullscreenImage {
+                FullscreenImageViewer(
+                    images: [img],
+                    startIndex: 0,
+                    onDismiss: { fullscreenImage = nil }
+                )
+                .transition(.opacity)
+                .zIndex(99)
+            }
+        }
     }
 
     func sectionLabel(_ text: String) -> some View {
@@ -291,6 +311,9 @@ struct MuscleGroupEditorView: View {
             }
         }
         .padding(12).background(Color(hex: "1C1C1E")).cornerRadius(12)
+        .onTapGesture(count: 2) {
+            if let img = g.image { fullscreenImage = img }
+        }
     }
 }
 
@@ -306,6 +329,9 @@ struct MuscleGroupForm: View {
     @State private var colorHex        = "FF6B00"
     @State private var imageData: Data? = nil
     @State private var showPicker      = false
+    @State private var showCamera      = false
+    @State private var showSource      = false
+    @State private var imageToCrop: CropImageWrapper? = nil
     @State private var showCustomColor = false
     @State private var customColor     = Color.orange
     @FocusState private var nameFocused: Bool
@@ -384,10 +410,10 @@ struct MuscleGroupForm: View {
                                 Spacer()
                             }.padding(14)
                         }
-                        .onTapGesture { showPicker = true }
+                        .onTapGesture { showSource = true }
                         .overlay(
                             // camera button top-right
-                            Button(action: { showPicker = true }) {
+                            Button(action: { showSource = true }) {
                                 Image(systemName: imageData == nil ? "camera.fill" : "camera.badge.ellipsis")
                                     .font(.system(size: 13, weight: .medium))
                                     .foregroundColor(.white)
@@ -484,8 +510,26 @@ struct MuscleGroupForm: View {
         }
         .sheet(isPresented: $showPicker) {
             MuscleGroupPhotoPicker { img in
-                if let img { imageData = img.jpegData(compressionQuality: 0.7) }
+                if let img { imageToCrop = CropImageWrapper(image: img) }
             }
+        }
+        .sheet(isPresented: $showCamera) {
+            CameraWrapper { img in
+                if let img { imageToCrop = CropImageWrapper(image: img) }
+            }
+        }
+        .fullScreenCover(item: $imageToCrop) { wrapper in
+            ImageCropperView(image: wrapper.image) { cropped in
+                imageData = cropped.jpegData(compressionQuality: 0.7)
+                imageToCrop = nil
+            } onCancel: {
+                imageToCrop = nil
+            }
+        }
+        .confirmationDialog("Add Photo", isPresented: $showSource) {
+            Button("Choose from Library") { showPicker = true }
+            Button("Take Photo") { showCamera = true }
+            Button("Cancel", role: .cancel) {}
         }
         .sheet(isPresented: $showCustomColor) {
             CustomColorPickerSheet(selectedHex: $colorHex)

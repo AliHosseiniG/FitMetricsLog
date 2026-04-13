@@ -4,6 +4,7 @@
 //
 
 import SwiftUI
+import AVKit
 
 // MARK: - Plans Tab Root
 struct WorkoutPlanListView: View {
@@ -396,35 +397,102 @@ struct PlanDetailView: View {
 
 struct PlanItemRow: View {
     @ObservedObject private var loc = LocalizationManager.shared
+    @EnvironmentObject var exerciseStore: ExerciseStore
     let item: PlanExerciseItem
     let index: Int
+    @State private var fullscreenImageIndex: Int? = nil
+    @State private var showVideoPlayer = false
+
+    private var exercise: Exercise? {
+        exerciseStore.exercises.first { $0.id == item.exerciseId }
+    }
+
     var body: some View {
-        HStack(spacing: 14) {
-            Text("\(index)")
-                .font(.system(size: 14, weight: .bold)).foregroundColor(.orange)
-                .frame(width: 26, height: 26)
-                .background(Color.orange.opacity(0.12)).cornerRadius(8)
-            Image(systemName: item.muscleGroup.icon)
-                .font(.system(size: 15)).foregroundColor(item.muscleGroup.color)
-                .frame(width: 36, height: 36)
-                .background(item.muscleGroup.color.opacity(0.12)).cornerRadius(9)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(item.exerciseName)
-                    .font(.system(size: 13, weight: .semibold)).foregroundColor(.white)
-                HStack(spacing: 10) {
-                    Label("\(item.targetSets) sets", systemImage: "repeat")
-                        .font(.system(size: 11)).foregroundColor(.gray)
-                    Label("\(item.targetReps) reps", systemImage: "arrow.clockwise")
-                        .font(.system(size: 11)).foregroundColor(.gray)
-                    if item.targetWeight > 0 {
-                        Label(String(format: "%.1f kg", item.targetWeight), systemImage: "scalemass")
-                            .font(.system(size: 11)).foregroundColor(.orange)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 14) {
+                Text("\(index)")
+                    .font(.system(size: 14, weight: .bold)).foregroundColor(.orange)
+                    .frame(width: 26, height: 26)
+                    .background(Color.orange.opacity(0.12)).cornerRadius(8)
+                // Exercise photo or muscle icon
+                ZStack {
+                    RoundedRectangle(cornerRadius: 9)
+                        .fill(item.muscleGroup.color.opacity(0.12))
+                        .frame(width: 36, height: 36)
+                    if let img = exercise?.firstImage {
+                        Image(uiImage: img).resizable().scaledToFill()
+                            .frame(width: 36, height: 36).clipped().cornerRadius(9)
+                    } else {
+                        Image(systemName: item.muscleGroup.icon)
+                            .font(.system(size: 15)).foregroundColor(item.muscleGroup.color)
+                    }
+                }
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(item.exerciseName)
+                        .font(.system(size: 13, weight: .semibold)).foregroundColor(.white)
+                    HStack(spacing: 10) {
+                        Label("\(item.targetSets) sets", systemImage: "repeat")
+                            .font(.system(size: 11)).foregroundColor(.gray)
+                        Label("\(item.targetReps) reps", systemImage: "arrow.clockwise")
+                            .font(.system(size: 11)).foregroundColor(.gray)
+                        if item.targetWeight > 0 {
+                            Label(String(format: "%.1f kg", item.targetWeight), systemImage: "scalemass")
+                                .font(.system(size: 11)).foregroundColor(.orange)
+                        }
+                    }
+                }
+                Spacer()
+            }
+            // Exercise photos gallery
+            if let ex = exercise, !ex.images.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(Array(ex.images.enumerated()), id: \.offset) { idx, img in
+                            Image(uiImage: img).resizable().scaledToFill()
+                                .frame(width: ex.images.count == 1 ? 200 : 110, height: 80)
+                                .clipped().cornerRadius(10)
+                                .onTapGesture(count: 2) { fullscreenImageIndex = idx }
+                        }
                     }
                 }
             }
-            Spacer()
+            // Exercise video thumbnail
+            if let ex = exercise, !ex.localVideoFileName.isEmpty,
+               let _ = VideoFileManager.url(for: ex.localVideoFileName) {
+                Button(action: { showVideoPlayer = true }) {
+                    ZStack {
+                        if let thumb = VideoFileManager.thumbnail(for: ex.localVideoFileName) {
+                            Image(uiImage: thumb).resizable().scaledToFill()
+                                .frame(maxWidth: .infinity, maxHeight: 100).clipped().cornerRadius(10)
+                        } else {
+                            RoundedRectangle(cornerRadius: 10).fill(Color(hex: "2C2C2C"))
+                                .frame(maxWidth: .infinity, maxHeight: 100)
+                        }
+                        Image(systemName: "play.circle.fill")
+                            .font(.system(size: 32)).foregroundColor(.white.opacity(0.9))
+                            .shadow(color: .black.opacity(0.5), radius: 4)
+                    }
+                }
+            }
         }
         .padding(12).background(Color(hex: "1C1C1E")).cornerRadius(12)
+        .fullScreenCover(item: Binding(
+            get: { fullscreenImageIndex.map { FullscreenImageWrapper(index: $0) } },
+            set: { fullscreenImageIndex = $0?.index }
+        )) { wrapper in
+            if let ex = exercise {
+                FullscreenImageViewer(
+                    images: ex.images,
+                    startIndex: wrapper.index,
+                    onDismiss: { fullscreenImageIndex = nil }
+                )
+            }
+        }
+        .fullScreenCover(isPresented: $showVideoPlayer) {
+            if let ex = exercise, let url = VideoFileManager.url(for: ex.localVideoFileName) {
+                VideoPlayerFullscreen(url: url) { showVideoPlayer = false }
+            }
+        }
     }
 }
 
