@@ -59,6 +59,8 @@ struct ContentView: View {
             DispatchQueue.global(qos: .background).async {
                 logStore.resizeStoredImages(maxDimension: 600)
                 exerciseStore.resizeStoredImages(maxDimension: 900)
+                planStore.resizeStoredImages(maxDimension: 1000)
+                MuscleGroupManager.shared.resizeStoredImages(maxDimension: 800)
             }
         }
     }

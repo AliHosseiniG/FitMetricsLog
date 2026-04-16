@@ -127,6 +127,45 @@ class MuscleGroupManager: ObservableObject {
         rebuildGroups()
     }
 
+    /// Resize oversized muscle group images (safe — only shrinks, never deletes)
+    func resizeStoredImages(maxDimension: CGFloat = 800) {
+        var customsChanged = false
+        var customs = customFromStore()
+        for i in customs.indices {
+            guard let data = customs[i].imageData,
+                  let img = UIImage(data: data) else { continue }
+            let sz = img.size
+            let scale = min(maxDimension / sz.width, maxDimension / sz.height, 1.0)
+            if scale >= 1.0 { continue }
+            let newSz = CGSize(width: sz.width * scale, height: sz.height * scale)
+            let renderer = UIGraphicsImageRenderer(size: newSz)
+            let resized = renderer.image { _ in img.draw(in: CGRect(origin: .zero, size: newSz)) }
+            if let newData = resized.jpegData(compressionQuality: 0.7) {
+                customs[i].imageData = newData
+                customsChanged = true
+            }
+        }
+        if customsChanged { saveCustom(customs) }
+
+        var overridesChanged = false
+        for (key, var g) in overrides {
+            guard let data = g.imageData, let img = UIImage(data: data) else { continue }
+            let sz = img.size
+            let scale = min(maxDimension / sz.width, maxDimension / sz.height, 1.0)
+            if scale >= 1.0 { continue }
+            let newSz = CGSize(width: sz.width * scale, height: sz.height * scale)
+            let renderer = UIGraphicsImageRenderer(size: newSz)
+            let resized = renderer.image { _ in img.draw(in: CGRect(origin: .zero, size: newSz)) }
+            if let newData = resized.jpegData(compressionQuality: 0.7) {
+                g.imageData = newData
+                overrides[key] = g
+                overridesChanged = true
+            }
+        }
+        if overridesChanged { saveOverrides() }
+        if customsChanged || overridesChanged { rebuildGroups() }
+    }
+
     // MARK: - Storage
     private func customFromStore() -> [MuscleGroup] {
         guard let data = UserDefaults.standard.data(forKey: customKey),
@@ -520,7 +559,9 @@ struct MuscleGroupForm: View {
         }
         .fullScreenCover(item: $imageToCrop) { wrapper in
             ImageCropperView(image: wrapper.image) { cropped in
-                imageData = cropped.jpegData(compressionQuality: 0.7)
+                // Resize to max 800px before encoding to keep memory reasonable
+                let resized = mgResize(cropped, maxDimension: 800)
+                imageData = resized.jpegData(compressionQuality: 0.7)
                 imageToCrop = nil
             } onCancel: {
                 imageToCrop = nil
@@ -556,6 +597,15 @@ struct MuscleGroupForm: View {
             manager.add(newGroup)
         }
         dismiss()
+    }
+
+    func mgResize(_ img: UIImage, maxDimension: CGFloat) -> UIImage {
+        let size = img.size
+        let scale = min(maxDimension / size.width, maxDimension / size.height, 1.0)
+        if scale >= 1.0 { return img }
+        let newSize = CGSize(width: size.width * scale, height: size.height * scale)
+        let renderer = UIGraphicsImageRenderer(size: newSize)
+        return renderer.image { _ in img.draw(in: CGRect(origin: .zero, size: newSize)) }
     }
 }
 

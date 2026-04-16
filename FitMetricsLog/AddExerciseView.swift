@@ -485,7 +485,7 @@ struct AddExerciseView: View {
             videoThumbnail = VideoFileManager.thumbnail(for: ex.localVideoFileName)
         }
         tags         = ex.tags.joined(separator: ", ")
-        images       = ex.images
+        images       = ex.imageDatas.compactMap { UIImage(data: $0) }
         colorHex     = ex.customColorHex ?? ex.muscleGroup.colorHex
     }
 
@@ -650,7 +650,21 @@ struct VideoPHPickerWrapper: UIViewControllerRepresentable {
             guard let prov = results.first?.itemProvider else { parent.onSelect(nil); return }
             if prov.hasItemConformingToTypeIdentifier("public.movie") {
                 prov.loadFileRepresentation(forTypeIdentifier: "public.movie") { url, _ in
-                    DispatchQueue.main.async { self.parent.onSelect(url) }
+                    // loadFileRepresentation gives a temp file deleted after this callback returns,
+                    // so copy it immediately before dispatching to main thread.
+                    guard let url else {
+                        DispatchQueue.main.async { self.parent.onSelect(nil) }
+                        return
+                    }
+                    let ext = url.pathExtension.isEmpty ? "mp4" : url.pathExtension
+                    let tmpCopy = FileManager.default.temporaryDirectory
+                        .appendingPathComponent("\(UUID().uuidString).\(ext)")
+                    do {
+                        try FileManager.default.copyItem(at: url, to: tmpCopy)
+                        DispatchQueue.main.async { self.parent.onSelect(tmpCopy) }
+                    } catch {
+                        DispatchQueue.main.async { self.parent.onSelect(nil) }
+                    }
                 }
             } else {
                 parent.onSelect(nil)

@@ -40,7 +40,7 @@ struct ExerciseChartView: View {
                                 RoundedRectangle(cornerRadius: 12)
                                     .fill(exercise.muscleGroup.color.opacity(0.18))
                                     .frame(width: 52, height: 52)
-                                if let img = exercise.firstImage {
+                                if let img = exercise.thumbnail(maxPixelSize: 200) {
                                     Image(uiImage: img).resizable().scaledToFill()
                                         .frame(width: 52, height: 52).clipped().cornerRadius(12)
                                 } else {

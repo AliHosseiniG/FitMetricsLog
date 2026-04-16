@@ -216,6 +216,9 @@ struct ExerciseDetailView: View {
     @State private var showingDelete     = false
     @State private var fullscreenIndex: Int? = nil   // nil = hidden
     @State private var showVideoPlayer   = false
+    // Cache images to avoid decoding on every render
+    @State private var cachedImages: [UIImage] = []
+    @State private var cachedFirstImage: UIImage? = nil
 
     var live: Exercise {
         exerciseStore.exercises.first { $0.id == exercise.id } ?? exercise
@@ -235,7 +238,7 @@ struct ExerciseDetailView: View {
                         if !live.tags.isEmpty             { tagsSection }
                         muscleSection
                         if !live.localVideoFileName.isEmpty || !live.videoURL.isEmpty { videoSection }
-                        if !live.images.isEmpty           { gallerySection }
+                        if !cachedImages.isEmpty           { gallerySection }
                         Spacer(minLength: 120)
                     }
                     .padding(.horizontal, 20).padding(.top, 20)
@@ -276,9 +279,9 @@ struct ExerciseDetailView: View {
             .zIndex(50)  // always above hero image
 
             // Full-screen image viewer (topmost layer)
-            if let idx = fullscreenIndex {
+            if let idx = fullscreenIndex, !cachedImages.isEmpty {
                 FullscreenImageViewer(
-                    images: live.images,
+                    images: cachedImages,
                     startIndex: idx,
                     onDismiss: { fullscreenIndex = nil },
                     onDelete: { deleteImage(at: $0) }
@@ -306,12 +309,19 @@ struct ExerciseDetailView: View {
         } message: {
             Text(L(.historyKept))
         }
+        .onAppear {
+            // Preload images once to avoid decoding on every render
+            if cachedImages.isEmpty {
+                cachedImages = live.imageDatas.compactMap { UIImage(data: $0) }
+                cachedFirstImage = cachedImages.first
+            }
+        }
     }
 
     // MARK: Hero image / gradient
     var heroSection: some View {
         ZStack(alignment: .bottomLeading) {
-            if let img = live.firstImage {
+            if let img = cachedFirstImage {
                 Image(uiImage: img)
                     .resizable().scaledToFill()
                     .frame(maxWidth: .infinity, maxHeight: 300)
@@ -469,16 +479,16 @@ struct ExerciseDetailView: View {
     var gallerySection: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                SectionTitle("Photos  (\(live.images.count))")
+                SectionTitle("Photos  (\(cachedImages.count))")
                 Spacer()
-                if live.images.count > 0 {
+                if cachedImages.count > 0 {
                     Text(L(.tapToViewHoldToDelete))
                         .font(.system(size: 11)).foregroundColor(.gray)
                 }
             }
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 10) {
-                    ForEach(Array(live.images.enumerated()), id: \.offset) { idx, img in
+                    ForEach(Array(cachedImages.enumerated()), id: \.offset) { idx, img in
                         ZStack(alignment: .topTrailing) {
                             Button(action: {
                                 withAnimation(.easeInOut(duration: 0.2)) { fullscreenIndex = idx }
@@ -680,7 +690,7 @@ struct ExerciseRowCard: View {
                 RoundedRectangle(cornerRadius: 12)
                     .fill(exercise.muscleGroup.color.opacity(0.15))
                     .frame(width: 78, height: 78)
-                if let img = exercise.firstImage {
+                if let img = exercise.thumbnail(maxPixelSize: 300) {
                     Image(uiImage: img)
                         .resizable().scaledToFill()
                         .frame(width: 78, height: 78)

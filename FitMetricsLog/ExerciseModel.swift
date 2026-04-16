@@ -14,6 +14,84 @@ import SwiftUI
 import UIKit
 import Combine
 import AVFoundation
+import ImageIO
+
+// MARK: - Image Downsampling Cache
+// Uses NSCache (auto-evicts on memory pressure) to hold small decoded thumbnails.
+// Downsamples JPEGs via ImageIO without loading the full bitmap.
+enum ImageDataCache {
+    private static let cache: NSCache<NSString, UIImage> = {
+        let c = NSCache<NSString, UIImage>()
+        c.countLimit = 200            // max 200 thumbnails in memory
+        c.totalCostLimit = 40 * 1024 * 1024  // ~40 MB
+        return c
+    }()
+
+    /// Returns a downsampled UIImage from raw Data, caching by key.
+    static func thumbnail(data: Data, maxPixelSize: CGFloat, key: String) -> UIImage? {
+        let nsKey = key as NSString
+        if let cached = cache.object(forKey: nsKey) { return cached }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize
+        ]
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+        else { return nil }
+        let img = UIImage(cgImage: cg)
+        // Approximate memory cost (4 bytes per pixel)
+        let cost = Int(img.size.width * img.size.height * 4)
+        cache.setObject(img, forKey: nsKey, cost: cost)
+        return img
+    }
+
+    static func clear() { cache.removeAllObjects() }
+}
+
+extension Exercise {
+    /// Small cached thumbnail of first image (for list/row display).
+    func thumbnail(maxPixelSize: CGFloat = 200) -> UIImage? {
+        guard let data = imageDatas.first else { return nil }
+        return ImageDataCache.thumbnail(data: data, maxPixelSize: maxPixelSize,
+                                        key: "ex-\(id.uuidString)-0-\(Int(maxPixelSize))")
+    }
+
+    /// Cached thumbnails for the full image gallery.
+    func galleryThumbnails(maxPixelSize: CGFloat = 400) -> [UIImage] {
+        imageDatas.enumerated().compactMap { idx, data in
+            ImageDataCache.thumbnail(data: data, maxPixelSize: maxPixelSize,
+                                     key: "ex-\(id.uuidString)-\(idx)-\(Int(maxPixelSize))")
+        }
+    }
+}
+
+extension WorkoutPlan {
+    /// Cached thumbnail of the plan cover photo.
+    func coverThumbnail(maxPixelSize: CGFloat = 600) -> UIImage? {
+        guard let data = imageData else { return nil }
+        return ImageDataCache.thumbnail(data: data, maxPixelSize: maxPixelSize,
+                                        key: "plan-\(id.uuidString)-\(Int(maxPixelSize))")
+    }
+}
+
+extension WorkoutLog {
+    /// Cached thumbnails of log's exercise image snapshots.
+    func logGalleryThumbnails(maxPixelSize: CGFloat = 300) -> [UIImage] {
+        exerciseImageDatas.enumerated().compactMap { idx, data in
+            ImageDataCache.thumbnail(data: data, maxPixelSize: maxPixelSize,
+                                     key: "log-\(id.uuidString)-\(idx)-\(Int(maxPixelSize))")
+        }
+    }
+
+    /// Cached thumbnail of the log's first image (small icon).
+    func logThumbnail(maxPixelSize: CGFloat = 100) -> UIImage? {
+        guard let data = exerciseImageData ?? exerciseImageDatas.first else { return nil }
+        return ImageDataCache.thumbnail(data: data, maxPixelSize: maxPixelSize,
+                                        key: "log-\(id.uuidString)-first-\(Int(maxPixelSize))")
+    }
+}
 
 // MARK: - MuscleGroup (struct — supports built-in + custom)
 struct MuscleGroup: Identifiable, Codable, Hashable {
@@ -84,8 +162,9 @@ struct Exercise: Identifiable, Codable {
         }
     }
 
-    var images:     [UIImage] { imageDatas.compactMap { UIImage(data: $0) } }
-    var firstImage: UIImage?  { images.first }
+    // DO NOT USE: images property loads ALL full-res images — use thumbnail() or galleryThumbnails() instead
+    // var images:     [UIImage] { imageDatas.compactMap { UIImage(data: $0) } }
+    // var firstImage: UIImage?  { images.first }
     var chartColor: Color {
         guard let hex = customColorHex else { return muscleGroup.color }
         return Color(hex: hex)
@@ -104,6 +183,8 @@ class ExerciseStore: ObservableObject {
     func update(_ e: Exercise) {
         guard let i = exercises.firstIndex(where: { $0.id == e.id }) else { return }
         exercises[i] = e; save()
+        // Clear image cache so new thumbnails regenerate
+        ImageDataCache.clear()
     }
     func updateExercise(_ e: Exercise) { update(e) }
     func delete(_ e: Exercise)         { VideoFileManager.delete(e.localVideoFileName); exercises.removeAll { $0.id == e.id }; save() }
@@ -163,6 +244,9 @@ class ExerciseStore: ObservableObject {
 
 // MARK: - Video File Manager
 enum VideoFileManager {
+    // In-memory thumbnail cache — avoids regenerating thumbnails on every SwiftUI render
+    private static var thumbnailCache: [String: UIImage] = [:]
+
     private static var videosDir: URL {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let dir = docs.appendingPathComponent("ExerciseVideos", isDirectory: true)
@@ -197,18 +281,23 @@ enum VideoFileManager {
 
     static func delete(_ fileName: String) {
         guard !fileName.isEmpty else { return }
+        thumbnailCache.removeValue(forKey: fileName)
         let url = videosDir.appendingPathComponent(fileName)
         try? FileManager.default.removeItem(at: url)
     }
 
     static func thumbnail(for fileName: String) -> UIImage? {
+        guard !fileName.isEmpty else { return nil }
+        if let cached = thumbnailCache[fileName] { return cached }
         guard let url = url(for: fileName) else { return nil }
         let asset = AVAsset(url: url)
         let gen = AVAssetImageGenerator(asset: asset)
         gen.appliesPreferredTrackTransform = true
         gen.maximumSize = CGSize(width: 300, height: 300)
         if let cgImg = try? gen.copyCGImage(at: .zero, actualTime: nil) {
-            return UIImage(cgImage: cgImg)
+            let img = UIImage(cgImage: cgImg)
+            thumbnailCache[fileName] = img
+            return img
         }
         return nil
     }

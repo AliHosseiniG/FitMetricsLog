@@ -188,8 +188,13 @@ struct PlanRowCard: View {
                     RoundedRectangle(cornerRadius: 10)
                         .fill(plan.color.opacity(0.2))
                         .frame(width: 44, height: 44)
-                    Image(systemName: "list.bullet.clipboard.fill")
-                        .font(.system(size: 20)).foregroundColor(plan.color)
+                    if let img = plan.coverThumbnail(maxPixelSize: 120) {
+                        Image(uiImage: img).resizable().scaledToFill()
+                            .frame(width: 44, height: 44).clipped().cornerRadius(10)
+                    } else {
+                        Image(systemName: "list.bullet.clipboard.fill")
+                            .font(.system(size: 20)).foregroundColor(plan.color)
+                    }
                 }
                 VStack(alignment: .leading, spacing: 3) {
                     Text(plan.name)
@@ -231,6 +236,7 @@ struct PlanDetailView: View {
     @State private var showingLog     = false
     @State private var isReordering   = false
     @State private var localItems:    [PlanExerciseItem] = []
+    @State private var showFullscreenImage = false
 
     var live: WorkoutPlan {
         planStore.plans.first { $0.id == plan.id } ?? plan
@@ -243,13 +249,24 @@ struct PlanDetailView: View {
                 VStack(spacing: 0) {
                     // Hero
                     ZStack(alignment: .bottomLeading) {
-                        LinearGradient(
-                            colors: [live.color.opacity(0.4), Color(hex: "111111")],
-                            startPoint: .top, endPoint: .bottom
-                        ).frame(height: 200)
-                        Image(systemName: "list.bullet.clipboard.fill")
-                            .font(.system(size: 90)).foregroundColor(live.color.opacity(0.15))
-                            .frame(maxWidth: .infinity, alignment: .trailing).padding(.trailing, 20)
+                        if let img = live.coverThumbnail(maxPixelSize: 1000) {
+                            Image(uiImage: img).resizable().scaledToFill()
+                                .frame(maxWidth: .infinity).frame(height: 240)
+                                .clipped()
+                                .overlay(
+                                    LinearGradient(colors: [.clear, Color(hex: "111111")],
+                                                   startPoint: .center, endPoint: .bottom)
+                                )
+                                .onTapGesture(count: 2) { showFullscreenImage = true }
+                        } else {
+                            LinearGradient(
+                                colors: [live.color.opacity(0.4), Color(hex: "111111")],
+                                startPoint: .top, endPoint: .bottom
+                            ).frame(height: 200)
+                            Image(systemName: "list.bullet.clipboard.fill")
+                                .font(.system(size: 90)).foregroundColor(live.color.opacity(0.15))
+                                .frame(maxWidth: .infinity, alignment: .trailing).padding(.trailing, 20)
+                        }
                         VStack(alignment: .leading, spacing: 6) {
                             Text("\(live.items.count) exercises")
                                 .font(.system(size: 12, weight: .semibold)).foregroundColor(live.color)
@@ -383,6 +400,17 @@ struct PlanDetailView: View {
             Button("Delete", role: .destructive) { planStore.delete(plan); dismiss() }
             Button(L(.cancel), role: .cancel) {}
         }
+        .overlay {
+            if showFullscreenImage, let img = live.image {
+                FullscreenImageViewer(
+                    images: [img],
+                    startIndex: 0,
+                    onDismiss: { showFullscreenImage = false }
+                )
+                .transition(.opacity)
+                .zIndex(99)
+            }
+        }
     }
 
     func duplicatePlan() {
@@ -402,6 +430,12 @@ struct PlanItemRow: View {
     let index: Int
     @State private var fullscreenImageIndex: Int? = nil
     @State private var showVideoPlayer = false
+    // Preloaded once on appear — avoids re-decoding on every body render
+    @State private var thumb: UIImage? = nil
+    @State private var galleryThumbs: [UIImage] = []
+    @State private var fullscreenThumbs: [UIImage] = []  // Larger thumbnails for fullscreen (1200px)
+    @State private var videoThumb: UIImage? = nil
+    @State private var hasVideo: Bool = false
 
     private var exercise: Exercise? {
         exerciseStore.exercises.first { $0.id == item.exerciseId }
@@ -419,7 +453,7 @@ struct PlanItemRow: View {
                     RoundedRectangle(cornerRadius: 9)
                         .fill(item.muscleGroup.color.opacity(0.12))
                         .frame(width: 36, height: 36)
-                    if let img = exercise?.firstImage {
+                    if let img = thumb {
                         Image(uiImage: img).resizable().scaledToFill()
                             .frame(width: 36, height: 36).clipped().cornerRadius(9)
                     } else {
@@ -443,13 +477,13 @@ struct PlanItemRow: View {
                 }
                 Spacer()
             }
-            // Exercise photos gallery
-            if let ex = exercise, !ex.images.isEmpty {
+            // Exercise photos gallery — downsampled thumbnails
+            if !galleryThumbs.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
-                        ForEach(Array(ex.images.enumerated()), id: \.offset) { idx, img in
+                        ForEach(Array(galleryThumbs.enumerated()), id: \.offset) { idx, img in
                             Image(uiImage: img).resizable().scaledToFill()
-                                .frame(width: ex.images.count == 1 ? 200 : 110, height: 80)
+                                .frame(width: galleryThumbs.count == 1 ? 200 : 110, height: 80)
                                 .clipped().cornerRadius(10)
                                 .onTapGesture(count: 2) { fullscreenImageIndex = idx }
                         }
@@ -457,12 +491,11 @@ struct PlanItemRow: View {
                 }
             }
             // Exercise video thumbnail
-            if let ex = exercise, !ex.localVideoFileName.isEmpty,
-               let _ = VideoFileManager.url(for: ex.localVideoFileName) {
+            if hasVideo {
                 Button(action: { showVideoPlayer = true }) {
                     ZStack {
-                        if let thumb = VideoFileManager.thumbnail(for: ex.localVideoFileName) {
-                            Image(uiImage: thumb).resizable().scaledToFill()
+                        if let vt = videoThumb {
+                            Image(uiImage: vt).resizable().scaledToFill()
                                 .frame(maxWidth: .infinity, maxHeight: 100).clipped().cornerRadius(10)
                         } else {
                             RoundedRectangle(cornerRadius: 10).fill(Color(hex: "2C2C2C"))
@@ -476,13 +509,15 @@ struct PlanItemRow: View {
             }
         }
         .padding(12).background(Color(hex: "1C1C1E")).cornerRadius(12)
+        .onAppear { preloadMedia() }
         .fullScreenCover(item: Binding(
             get: { fullscreenImageIndex.map { FullscreenImageWrapper(index: $0) } },
             set: { fullscreenImageIndex = $0?.index }
         )) { wrapper in
-            if let ex = exercise {
+            // Use cached fullscreen thumbnails (1200px) instead of full-resolution
+            if !fullscreenThumbs.isEmpty {
                 FullscreenImageViewer(
-                    images: ex.images,
+                    images: fullscreenThumbs,
                     startIndex: wrapper.index,
                     onDismiss: { fullscreenImageIndex = nil }
                 )
@@ -491,6 +526,27 @@ struct PlanItemRow: View {
         .fullScreenCover(isPresented: $showVideoPlayer) {
             if let ex = exercise, let url = VideoFileManager.url(for: ex.localVideoFileName) {
                 VideoPlayerFullscreen(url: url) { showVideoPlayer = false }
+            }
+        }
+    }
+
+    /// Preload thumbnails once when row appears — runs off main thread to avoid blocking
+    func preloadMedia() {
+        guard thumb == nil && galleryThumbs.isEmpty else { return }
+        let exCopy = exercise  // capture once
+        DispatchQueue.global(qos: .userInitiated).async {
+            let t = exCopy?.thumbnail(maxPixelSize: 200)
+            let gt = exCopy?.galleryThumbnails(maxPixelSize: 400) ?? []
+            let fst = exCopy?.galleryThumbnails(maxPixelSize: 1200) ?? []  // Larger for fullscreen
+            let fileName = exCopy?.localVideoFileName ?? ""
+            let haveVideo = !fileName.isEmpty && VideoFileManager.url(for: fileName) != nil
+            let vt: UIImage? = haveVideo ? VideoFileManager.thumbnail(for: fileName) : nil
+            DispatchQueue.main.async {
+                self.thumb = t
+                self.galleryThumbs = gt
+                self.fullscreenThumbs = fst
+                self.hasVideo = haveVideo
+                self.videoThumb = vt
             }
         }
     }
@@ -508,8 +564,13 @@ struct PlanFormView: View {
     @State private var notes     = ""
     @State private var colorHex  = "FF6B00"
     @State private var items:  [PlanExerciseItem] = []
+    @State private var planImageData: Data? = nil
     @State private var showingExPicker = false
     @State private var editingItem: PlanExerciseItem? = nil
+    @State private var showPhotoSource = false
+    @State private var showPhotoPicker = false
+    @State private var showCameraPicker = false
+    @State private var imageToCrop: CropImageWrapper? = nil
     @FocusState private var focused: Bool
 
     let colors = ["FF6B00","FF3B30","FF9500","FFCC00","34C759",
@@ -552,6 +613,45 @@ struct PlanFormView: View {
                             TextField(L(.exerciseDesc) + "...", text: $notes)
                                 .foregroundColor(.white).focused($focused)
                                 .padding(14).background(Color(hex: "1C1C1E")).cornerRadius(12)
+                        }
+
+                        // Cover Photo
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack {
+                                Text("Cover Photo").font(.system(size: 13)).foregroundColor(.gray)
+                                Spacer()
+                                if planImageData != nil {
+                                    Button(action: { planImageData = nil }) {
+                                        HStack(spacing: 4) {
+                                            Image(systemName: "xmark.circle.fill").font(.system(size: 13))
+                                            Text("Remove").font(.system(size: 12))
+                                        }.foregroundColor(.red)
+                                    }
+                                }
+                            }
+                            if let data = planImageData, let img = UIImage(data: data) {
+                                ZStack(alignment: .bottomTrailing) {
+                                    Image(uiImage: img).resizable().scaledToFill()
+                                        .frame(maxWidth: .infinity, maxHeight: 150)
+                                        .clipped().cornerRadius(12)
+                                    Button(action: { showPhotoSource = true }) {
+                                        Image(systemName: "camera.fill")
+                                            .font(.system(size: 13)).foregroundColor(.white)
+                                            .padding(8).background(Color.black.opacity(0.6)).clipShape(Circle())
+                                    }.padding(8)
+                                }
+                            } else {
+                                Button(action: { showPhotoSource = true }) {
+                                    VStack(spacing: 8) {
+                                        Image(systemName: "photo.fill").font(.system(size: 22)).foregroundColor(.orange)
+                                        Text("Add Cover Photo").font(.system(size: 11)).foregroundColor(.gray)
+                                    }
+                                    .frame(maxWidth: .infinity).frame(height: 90)
+                                    .background(Color(hex: "1C1C1E")).cornerRadius(12)
+                                    .overlay(RoundedRectangle(cornerRadius: 12)
+                                        .stroke(Color.orange.opacity(0.4), style: StrokeStyle(lineWidth: 1.5, dash: [5])))
+                                }
+                            }
                         }
 
                         // Color
@@ -639,6 +739,31 @@ struct PlanFormView: View {
                 }
             }
         }
+        .sheet(isPresented: $showPhotoPicker) {
+            PHPickerWrapper { img in
+                if let img { imageToCrop = CropImageWrapper(image: img) }
+            }
+        }
+        .sheet(isPresented: $showCameraPicker) {
+            CameraWrapper { img in
+                if let img { imageToCrop = CropImageWrapper(image: img) }
+            }
+        }
+        .fullScreenCover(item: $imageToCrop) { wrapper in
+            ImageCropperView(image: wrapper.image) { cropped in
+                // Resize to max 1000px dimension before saving to keep memory reasonable
+                let resized = resizedUIImage(cropped, maxDimension: 1000)
+                planImageData = resized.jpegData(compressionQuality: 0.75)
+                imageToCrop = nil
+            } onCancel: {
+                imageToCrop = nil
+            }
+        }
+        .confirmationDialog("Add Photo", isPresented: $showPhotoSource) {
+            Button("Choose from Library") { showPhotoPicker = true }
+            Button("Take Photo") { showCameraPicker = true }
+            Button("Cancel", role: .cancel) {}
+        }
     }
 
     func prefill() {
@@ -647,6 +772,7 @@ struct PlanFormView: View {
         notes    = p.notes
         colorHex = p.colorHex
         items    = p.items
+        planImageData = p.imageData
     }
 
     func save() {
@@ -657,12 +783,24 @@ struct PlanFormView: View {
             p.notes    = notes
             p.colorHex = colorHex
             p.items    = items
+            p.imageData = planImageData
             planStore.update(p)
         } else {
-            planStore.add(WorkoutPlan(name: trimmed, notes: notes,
-                                     items: items, colorHex: colorHex))
+            var plan = WorkoutPlan(name: trimmed, notes: notes,
+                                   items: items, colorHex: colorHex)
+            plan.imageData = planImageData
+            planStore.add(plan)
         }
         dismiss()
+    }
+
+    func resizedUIImage(_ img: UIImage, maxDimension: CGFloat) -> UIImage {
+        let size = img.size
+        let scale = min(maxDimension / size.width, maxDimension / size.height, 1.0)
+        if scale >= 1.0 { return img }
+        let newSize = CGSize(width: size.width * scale, height: size.height * scale)
+        let renderer = UIGraphicsImageRenderer(size: newSize)
+        return renderer.image { _ in img.draw(in: CGRect(origin: .zero, size: newSize)) }
     }
 }
 

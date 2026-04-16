@@ -427,16 +427,20 @@ struct ExLogCard: View {
     @EnvironmentObject var exerciseStore: ExerciseStore
     @State private var fullscreenImageIndex: Int? = nil
     @State private var showVideoPlayer = false
+    @State private var iconThumb: UIImage? = nil
+    @State private var galleryThumbs: [UIImage] = []
+    @State private var videoThumb: UIImage? = nil
+    @State private var hasVideo: Bool = false
     var body: some View {
         let liveG = MuscleGroupManager.shared.liveGroup(for: log.muscleGroup.id) ?? log.muscleGroup
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 10) {
-                // Exercise photo or icon
+                // Exercise photo or icon (preloaded thumbnail)
                 ZStack {
                     RoundedRectangle(cornerRadius: 9)
                         .fill(liveG.color.opacity(0.15))
                         .frame(width: 44, height: 44)
-                    if let data = log.exerciseImageData, let img = UIImage(data: data) {
+                    if let img = iconThumb {
                         Image(uiImage: img).resizable().scaledToFill()
                             .frame(width: 44, height: 44).clipped().cornerRadius(9)
                     } else {
@@ -521,28 +525,25 @@ struct ExLogCard: View {
                 Text("Est. 1RM: \(Int(log.estimatedOneRepMax)) kg")
                     .font(.system(size: 11)).foregroundColor(.gray)
             }
-            // Exercise images gallery (all photos) — double-tap for fullscreen
-            let allImgs = log.allImages
-            if !allImgs.isEmpty {
+            // Exercise images gallery — preloaded thumbnails
+            if !galleryThumbs.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
-                        ForEach(Array(allImgs.enumerated()), id: \.offset) { idx, img in
+                        ForEach(Array(galleryThumbs.enumerated()), id: \.offset) { idx, img in
                             Image(uiImage: img).resizable().scaledToFill()
-                                .frame(width: allImgs.count == 1 ? 220 : 120, height: 90)
+                                .frame(width: galleryThumbs.count == 1 ? 220 : 120, height: 90)
                                 .clipped().cornerRadius(10)
                                 .onTapGesture(count: 2) { fullscreenImageIndex = idx }
                         }
                     }
                 }.padding(.top, 4)
             }
-            // Exercise video thumbnail
-            if let ex = exerciseStore.exercises.first(where: { $0.id == log.exerciseId }),
-               !ex.localVideoFileName.isEmpty,
-               let _ = VideoFileManager.url(for: ex.localVideoFileName) {
+            // Exercise video thumbnail — preloaded
+            if hasVideo {
                 Button(action: { showVideoPlayer = true }) {
                     ZStack {
-                        if let thumb = VideoFileManager.thumbnail(for: ex.localVideoFileName) {
-                            Image(uiImage: thumb).resizable().scaledToFill()
+                        if let vt = videoThumb {
+                            Image(uiImage: vt).resizable().scaledToFill()
                                 .frame(maxWidth: .infinity, maxHeight: 120).clipped().cornerRadius(10)
                         } else {
                             RoundedRectangle(cornerRadius: 10).fill(Color(hex: "2C2C2C"))
@@ -557,6 +558,7 @@ struct ExLogCard: View {
             }
         }
         .padding(14).background(Color(hex: "1C1C1E")).cornerRadius(14)
+        .onAppear { preloadMedia() }
         .fullScreenCover(isPresented: $showVideoPlayer) {
             if let ex = exerciseStore.exercises.first(where: { $0.id == log.exerciseId }),
                let url = VideoFileManager.url(for: ex.localVideoFileName) {
@@ -567,17 +569,41 @@ struct ExLogCard: View {
             get: { fullscreenImageIndex.map { FullscreenImageWrapper(index: $0) } },
             set: { fullscreenImageIndex = $0?.index }
         )) { wrapper in
-            FullscreenImageViewer(
-                images: log.allImages,
-                startIndex: wrapper.index,
-                onDismiss: { fullscreenImageIndex = nil }
-            )
+            // Use larger cached thumbnails for fullscreen (1200px) instead of full-res
+            let fullImgs = log.logGalleryThumbnails(maxPixelSize: 1200)
+            if !fullImgs.isEmpty {
+                FullscreenImageViewer(
+                    images: fullImgs,
+                    startIndex: wrapper.index,
+                    onDismiss: { fullscreenImageIndex = nil }
+                )
+            }
         }
         .contextMenu {
             if let onChart {
                 Button(action: onChart) {
                     Label("Volume Chart", systemImage: "chart.line.uptrend.xyaxis")
                 }
+            }
+        }
+    }
+
+    /// Preload thumbnails once when card appears — runs off main thread.
+    func preloadMedia() {
+        guard iconThumb == nil && galleryThumbs.isEmpty else { return }
+        let logCopy = log
+        let exId = log.exerciseId
+        let videoFile = exerciseStore.exercises.first(where: { $0.id == exId })?.localVideoFileName ?? ""
+        DispatchQueue.global(qos: .userInitiated).async {
+            let icon = logCopy.logThumbnail(maxPixelSize: 120)
+            let gallery = logCopy.logGalleryThumbnails(maxPixelSize: 300)
+            let haveVideo = !videoFile.isEmpty && VideoFileManager.url(for: videoFile) != nil
+            let vt: UIImage? = haveVideo ? VideoFileManager.thumbnail(for: videoFile) : nil
+            DispatchQueue.main.async {
+                self.iconThumb = icon
+                self.galleryThumbs = gallery
+                self.hasVideo = haveVideo
+                self.videoThumb = vt
             }
         }
     }
@@ -1194,7 +1220,7 @@ struct LogExercisePickerView: View {
                                 ZStack {
                                     RoundedRectangle(cornerRadius: 8)
                                         .fill(ex.muscleGroup.color.opacity(0.15)).frame(width: 36, height: 36)
-                                    if let img = ex.firstImage {
+                                    if let img = ex.thumbnail(maxPixelSize: 200) {
                                         Image(uiImage: img).resizable().scaledToFill()
                                             .frame(width: 36, height: 36).clipped().cornerRadius(8)
                                     } else {

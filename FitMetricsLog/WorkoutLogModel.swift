@@ -46,7 +46,8 @@ struct WorkoutLog: Identifiable, Codable {
         self.rowNumber           = rowNumber
     }
 
-    var allImages: [UIImage] { exerciseImageDatas.compactMap { UIImage(data: $0) } }
+    // DO NOT USE: allImages property loads ALL full-res images — use logThumbnail() or logGalleryThumbnails() instead
+    // var allImages: [UIImage] { exerciseImageDatas.compactMap { UIImage(data: $0) } }
 
     var totalVolume:        Double { sets.reduce(0) { $0 + $1.weight * Double($1.reps) } }
     var maxWeight:          Double { sets.map(\.weight).max() ?? 0 }
