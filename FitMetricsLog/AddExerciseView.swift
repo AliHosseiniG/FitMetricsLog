@@ -485,7 +485,16 @@ struct AddExerciseView: View {
             videoThumbnail = VideoFileManager.thumbnail(for: ex.localVideoFileName)
         }
         tags         = ex.tags.joined(separator: ", ")
-        images       = ex.imageDatas.compactMap { UIImage(data: $0) }
+        // Prefer disk files (new format). Fall back to legacy in-memory data.
+        if !ex.localImageFileNames.isEmpty {
+            images = ex.localImageFileNames.compactMap { name in
+                ImageFileManager.url(for: name).flatMap {
+                    try? Data(contentsOf: $0)
+                }.flatMap { UIImage(data: $0) }
+            }
+        } else {
+            images = ex.imageDatas.compactMap { UIImage(data: $0) }
+        }
         colorHex     = ex.customColorHex ?? ex.muscleGroup.colorHex
     }
 
@@ -504,13 +513,20 @@ struct AddExerciseView: View {
         guard !trimmed.isEmpty, !muscleGroups.isEmpty else { return }
         let tagList = tags.components(separatedBy: CharacterSet(charactersIn: ",،"))
             .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        // Save images to disk (Documents/ExerciseImages/) instead of keeping them in the model.
+        // This keeps UserDefaults tiny and frees RAM on launch.
         let processedImages = images.map { resizedImage($0, maxDimension: 900) }
+        let fileNames: [String] = processedImages.compactMap { img in
+            guard let data = img.jpegData(compressionQuality: 0.82) else { return nil }
+            return ImageFileManager.save(data)
+        }
         var ex = Exercise(
             name: trimmed, description: desc,
             muscleGroups: muscleGroups,
             difficulty: difficulty, duration: duration,
             sets: sets, reps: reps,
-            imageDatas: processedImages.compactMap { $0.jpegData(compressionQuality: 0.82) },
+            imageDatas: [],
+            localImageFileNames: fileNames,
             videoURL: videoURL, localVideoFileName: localVideoFileName,
             tags: tagList, customColorHex: colorHex
         )

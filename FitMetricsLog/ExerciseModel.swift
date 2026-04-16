@@ -48,11 +48,77 @@ enum ImageDataCache {
     }
 
     static func clear() { cache.removeAllObjects() }
+
+    // Shared accessors so ImageFileManager can use the same cache.
+    static func cachedObject(forKey key: NSString) -> UIImage? { cache.object(forKey: key) }
+    static func setObject(_ img: UIImage, forKey key: NSString, cost: Int) {
+        cache.setObject(img, forKey: key, cost: cost)
+    }
+}
+
+// MARK: - Image File Manager (disk-based storage for exercise images)
+// Stores exercise images as JPEG files in Documents/ExerciseImages/.
+// Keeps memory usage low by loading from disk on demand, via downsampled thumbnails.
+enum ImageFileManager {
+    private static var imagesDir: URL {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let dir = docs.appendingPathComponent("ExerciseImages", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    /// Save raw image data to a new file; returns the file name.
+    static func save(_ data: Data, fileName: String? = nil) -> String {
+        let name = fileName ?? "\(UUID().uuidString).jpg"
+        let url = imagesDir.appendingPathComponent(name)
+        try? data.write(to: url)
+        return name
+    }
+
+    /// Resolve a file name to a URL, or nil if missing.
+    static func url(for fileName: String) -> URL? {
+        guard !fileName.isEmpty else { return nil }
+        let url = imagesDir.appendingPathComponent(fileName)
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+
+    /// Delete an image file from disk.
+    static func delete(_ fileName: String) {
+        guard !fileName.isEmpty else { return }
+        let url = imagesDir.appendingPathComponent(fileName)
+        try? FileManager.default.removeItem(at: url)
+    }
+
+    /// Downsampled thumbnail directly from file — avoids loading full bitmap.
+    static func thumbnail(fileName: String, maxPixelSize: CGFloat) -> UIImage? {
+        guard let url = url(for: fileName) else { return nil }
+        let key = "file-\(fileName)-\(Int(maxPixelSize))" as NSString
+        if let cached = ImageDataCache.cachedObject(forKey: key) { return cached }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize
+        ]
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+        else { return nil }
+        let img = UIImage(cgImage: cg)
+        let cost = Int(img.size.width * img.size.height * 4)
+        ImageDataCache.setObject(img, forKey: key, cost: cost)
+        return img
+    }
 }
 
 extension Exercise {
     /// Small cached thumbnail of first image (for list/row display).
     func thumbnail(maxPixelSize: CGFloat = 200) -> UIImage? {
+        // Prefer disk file if available
+        if let name = localImageFileNames.first,
+           let img = ImageFileManager.thumbnail(fileName: name, maxPixelSize: maxPixelSize) {
+            return img
+        }
+        // Fallback: legacy in-memory data (pre-migration)
         guard let data = imageDatas.first else { return nil }
         return ImageDataCache.thumbnail(data: data, maxPixelSize: maxPixelSize,
                                         key: "ex-\(id.uuidString)-0-\(Int(maxPixelSize))")
@@ -60,7 +126,12 @@ extension Exercise {
 
     /// Cached thumbnails for the full image gallery.
     func galleryThumbnails(maxPixelSize: CGFloat = 400) -> [UIImage] {
-        imageDatas.enumerated().compactMap { idx, data in
+        if !localImageFileNames.isEmpty {
+            return localImageFileNames.compactMap {
+                ImageFileManager.thumbnail(fileName: $0, maxPixelSize: maxPixelSize)
+            }
+        }
+        return imageDatas.enumerated().compactMap { idx, data in
             ImageDataCache.thumbnail(data: data, maxPixelSize: maxPixelSize,
                                      key: "ex-\(id.uuidString)-\(idx)-\(Int(maxPixelSize))")
         }
@@ -129,7 +200,8 @@ struct Exercise: Identifiable, Codable {
     var duration:        Int
     var sets:            Int
     var reps:            Int
-    var imageDatas:      [Data]   = []
+    var imageDatas:      [Data]   = []   // legacy — migrated to disk files at launch
+    var localImageFileNames: [String] = [] // files in Documents/ExerciseImages/
     var videoURL:        String   = ""
     var localVideoFileName: String = ""   // file in Documents/ExerciseVideos/
     var createdAt:       Date     = Date()
@@ -171,26 +243,89 @@ struct Exercise: Identifiable, Codable {
     }
 }
 
+// MARK: - Exercise: tolerant Codable
+// Swift's synthesized Decodable throws `keyNotFound` when a non-Optional property
+// is missing from the JSON (default values are NOT applied at decode time).
+// Older saved exercises don't have `localImageFileNames`, so we decode every
+// optional/defaulted field with `decodeIfPresent` to keep legacy data loading.
+extension Exercise {
+    private enum CodingKeys: String, CodingKey {
+        case id, name, description, muscleGroups, difficulty, duration, sets, reps
+        case imageDatas, localImageFileNames, videoURL, localVideoFileName
+        case createdAt, tags, customColorHex
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.id                  = try c.decodeIfPresent(UUID.self,         forKey: .id) ?? UUID()
+        self.name                = try c.decode(String.self,                forKey: .name)
+        self.description         = try c.decode(String.self,                forKey: .description)
+        self.muscleGroups        = try c.decode([MuscleGroup].self,         forKey: .muscleGroups)
+        self.difficulty          = try c.decode(Difficulty.self,            forKey: .difficulty)
+        self.duration            = try c.decode(Int.self,                   forKey: .duration)
+        self.sets                = try c.decode(Int.self,                   forKey: .sets)
+        self.reps                = try c.decode(Int.self,                   forKey: .reps)
+        self.imageDatas          = try c.decodeIfPresent([Data].self,       forKey: .imageDatas)          ?? []
+        self.localImageFileNames = try c.decodeIfPresent([String].self,     forKey: .localImageFileNames) ?? []
+        self.videoURL            = try c.decodeIfPresent(String.self,       forKey: .videoURL)            ?? ""
+        self.localVideoFileName  = try c.decodeIfPresent(String.self,       forKey: .localVideoFileName)  ?? ""
+        self.createdAt           = try c.decodeIfPresent(Date.self,         forKey: .createdAt)           ?? Date()
+        self.tags                = try c.decodeIfPresent([String].self,     forKey: .tags)                ?? []
+        self.customColorHex      = try c.decodeIfPresent(String.self,       forKey: .customColorHex)
+    }
+}
+
 // MARK: - ExerciseStore
 class ExerciseStore: ObservableObject {
     @Published var exercises: [Exercise] = []
     private let saveKey = "exercises_v5"
 
-    init() { load() }
+    init() {
+        load()
+        migrateImagesToDiskIfNeeded()
+    }
 
     func add(_ e: Exercise)            { exercises.append(e); save() }
     func addExercise(_ e: Exercise)    { add(e) }
     func update(_ e: Exercise) {
         guard let i = exercises.firstIndex(where: { $0.id == e.id }) else { return }
+        // Delete any image files that were removed in the update
+        let oldFiles = Set(exercises[i].localImageFileNames)
+        let newFiles = Set(e.localImageFileNames)
+        for removed in oldFiles.subtracting(newFiles) {
+            ImageFileManager.delete(removed)
+        }
         exercises[i] = e; save()
         // Clear image cache so new thumbnails regenerate
         ImageDataCache.clear()
     }
     func updateExercise(_ e: Exercise) { update(e) }
-    func delete(_ e: Exercise)         { VideoFileManager.delete(e.localVideoFileName); exercises.removeAll { $0.id == e.id }; save() }
+    func delete(_ e: Exercise) {
+        VideoFileManager.delete(e.localVideoFileName)
+        e.localImageFileNames.forEach { ImageFileManager.delete($0) }
+        exercises.removeAll { $0.id == e.id }; save()
+    }
     func deleteExercise(_ e: Exercise) { delete(e) }
     func delete(at offsets: IndexSet)  { exercises.remove(atOffsets: offsets); save() }
     func clearAll() { exercises = []; save() }
+
+    /// Migration: move any in-memory imageDatas to disk files.
+    /// Idempotent — only touches exercises that still carry imageDatas, so it's safe
+    /// to run on every launch. No persistent flag (the previous flag could lock in
+    /// an empty state if load() had previously failed).
+    private func migrateImagesToDiskIfNeeded() {
+        var changed = false
+        for i in exercises.indices {
+            guard !exercises[i].imageDatas.isEmpty else { continue }
+            let names: [String] = exercises[i].imageDatas.map { data in
+                ImageFileManager.save(data)
+            }
+            exercises[i].localImageFileNames.append(contentsOf: names)
+            exercises[i].imageDatas = []   // free memory; data now on disk
+            changed = true
+        }
+        if changed { save() }
+    }
 
     /// Resize oversized exercise images in background — safe, no data deleted
     func resizeStoredImages(maxDimension: CGFloat = 900) {

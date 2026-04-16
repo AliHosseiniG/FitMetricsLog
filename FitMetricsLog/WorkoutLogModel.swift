@@ -114,7 +114,28 @@ class WorkoutLogStore: ObservableObject {
     @Published var sessions: [WorkoutSession] = []
     private let saveKey = "workout_sessions_v5"
 
-    init() { load() }
+    init() {
+        load()
+        purgeLogImagesIfNeeded()
+    }
+
+    /// Clear duplicated image snapshots from every log.
+    /// Idempotent — only modifies logs that still carry snapshot data, so safe to
+    /// run on every launch. Exercise images now live with the Exercise on disk.
+    private func purgeLogImagesIfNeeded() {
+        var changed = false
+        for si in sessions.indices {
+            for li in sessions[si].logs.indices {
+                if sessions[si].logs[li].exerciseImageData != nil ||
+                   !sessions[si].logs[li].exerciseImageDatas.isEmpty {
+                    sessions[si].logs[li].exerciseImageData = nil
+                    sessions[si].logs[li].exerciseImageDatas = []
+                    changed = true
+                }
+            }
+        }
+        if changed { save() }
+    }
 
     // Sync exercise name across all history
     func syncExerciseName(id: UUID, newName: String) {

@@ -425,28 +425,29 @@ struct ExLogCard: View {
     var onChart: (() -> Void)? = nil
     var onToggleComplete: (() -> Void)? = nil
     @EnvironmentObject var exerciseStore: ExerciseStore
-    @State private var fullscreenImageIndex: Int? = nil
-    @State private var showVideoPlayer = false
-    @State private var iconThumb: UIImage? = nil
-    @State private var galleryThumbs: [UIImage] = []
-    @State private var videoThumb: UIImage? = nil
-    @State private var hasVideo: Bool = false
+    @State private var showMediaViewer = false
+
+    /// True if the backing Exercise has any photos or a video on disk.
+    private var hasMedia: Bool {
+        guard let ex = exerciseStore.exercises.first(where: { $0.id == log.exerciseId }) else { return false }
+        if !ex.localImageFileNames.isEmpty { return true }
+        if !ex.imageDatas.isEmpty { return true }  // legacy fallback
+        if !ex.localVideoFileName.isEmpty,
+           VideoFileManager.url(for: ex.localVideoFileName) != nil { return true }
+        return false
+    }
+
     var body: some View {
         let liveG = MuscleGroupManager.shared.liveGroup(for: log.muscleGroup.id) ?? log.muscleGroup
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 10) {
-                // Exercise photo or icon (preloaded thumbnail)
+                // Muscle group icon
                 ZStack {
                     RoundedRectangle(cornerRadius: 9)
                         .fill(liveG.color.opacity(0.15))
                         .frame(width: 44, height: 44)
-                    if let img = iconThumb {
-                        Image(uiImage: img).resizable().scaledToFill()
-                            .frame(width: 44, height: 44).clipped().cornerRadius(9)
-                    } else {
-                        Image(systemName: liveG.icon)
-                            .font(.system(size: 18)).foregroundColor(liveG.color)
-                    }
+                    Image(systemName: liveG.icon)
+                        .font(.system(size: 18)).foregroundColor(liveG.color)
                 }
                 // Row number badge
                 if log.rowNumber > 0 {
@@ -471,6 +472,17 @@ struct ExLogCard: View {
                                     .foregroundColor(.orange.opacity(0.85))
                                     .frame(width: 26, height: 22)
                                     .background(Color.orange.opacity(0.12))
+                                    .cornerRadius(6)
+                            }
+                        }
+                        // Media button — opens on-demand viewer (no eager load)
+                        if hasMedia {
+                            Button(action: { showMediaViewer = true }) {
+                                Image(systemName: "photo.on.rectangle")
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundColor(.blue.opacity(0.85))
+                                    .frame(width: 26, height: 22)
+                                    .background(Color.blue.opacity(0.12))
                                     .cornerRadius(6)
                             }
                         }
@@ -525,60 +537,8 @@ struct ExLogCard: View {
                 Text("Est. 1RM: \(Int(log.estimatedOneRepMax)) kg")
                     .font(.system(size: 11)).foregroundColor(.gray)
             }
-            // Exercise images gallery — preloaded thumbnails
-            if !galleryThumbs.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(Array(galleryThumbs.enumerated()), id: \.offset) { idx, img in
-                            Image(uiImage: img).resizable().scaledToFill()
-                                .frame(width: galleryThumbs.count == 1 ? 220 : 120, height: 90)
-                                .clipped().cornerRadius(10)
-                                .onTapGesture(count: 2) { fullscreenImageIndex = idx }
-                        }
-                    }
-                }.padding(.top, 4)
-            }
-            // Exercise video thumbnail — preloaded
-            if hasVideo {
-                Button(action: { showVideoPlayer = true }) {
-                    ZStack {
-                        if let vt = videoThumb {
-                            Image(uiImage: vt).resizable().scaledToFill()
-                                .frame(maxWidth: .infinity, maxHeight: 120).clipped().cornerRadius(10)
-                        } else {
-                            RoundedRectangle(cornerRadius: 10).fill(Color(hex: "2C2C2C"))
-                                .frame(maxWidth: .infinity, maxHeight: 120)
-                        }
-                        Image(systemName: "play.circle.fill")
-                            .font(.system(size: 36)).foregroundColor(.white.opacity(0.9))
-                            .shadow(color: .black.opacity(0.5), radius: 4)
-                    }
-                }
-                .padding(.top, 4)
-            }
         }
         .padding(14).background(Color(hex: "1C1C1E")).cornerRadius(14)
-        .onAppear { preloadMedia() }
-        .fullScreenCover(isPresented: $showVideoPlayer) {
-            if let ex = exerciseStore.exercises.first(where: { $0.id == log.exerciseId }),
-               let url = VideoFileManager.url(for: ex.localVideoFileName) {
-                VideoPlayerFullscreen(url: url) { showVideoPlayer = false }
-            }
-        }
-        .fullScreenCover(item: Binding(
-            get: { fullscreenImageIndex.map { FullscreenImageWrapper(index: $0) } },
-            set: { fullscreenImageIndex = $0?.index }
-        )) { wrapper in
-            // Use larger cached thumbnails for fullscreen (1200px) instead of full-res
-            let fullImgs = log.logGalleryThumbnails(maxPixelSize: 1200)
-            if !fullImgs.isEmpty {
-                FullscreenImageViewer(
-                    images: fullImgs,
-                    startIndex: wrapper.index,
-                    onDismiss: { fullscreenImageIndex = nil }
-                )
-            }
-        }
         .contextMenu {
             if let onChart {
                 Button(action: onChart) {
@@ -586,25 +546,9 @@ struct ExLogCard: View {
                 }
             }
         }
-    }
-
-    /// Preload thumbnails once when card appears — runs off main thread.
-    func preloadMedia() {
-        guard iconThumb == nil && galleryThumbs.isEmpty else { return }
-        let logCopy = log
-        let exId = log.exerciseId
-        let videoFile = exerciseStore.exercises.first(where: { $0.id == exId })?.localVideoFileName ?? ""
-        DispatchQueue.global(qos: .userInitiated).async {
-            let icon = logCopy.logThumbnail(maxPixelSize: 120)
-            let gallery = logCopy.logGalleryThumbnails(maxPixelSize: 300)
-            let haveVideo = !videoFile.isEmpty && VideoFileManager.url(for: videoFile) != nil
-            let vt: UIImage? = haveVideo ? VideoFileManager.thumbnail(for: videoFile) : nil
-            DispatchQueue.main.async {
-                self.iconThumb = icon
-                self.galleryThumbs = gallery
-                self.hasVideo = haveVideo
-                self.videoThumb = vt
-            }
+        .fullScreenCover(isPresented: $showMediaViewer) {
+            ExerciseMediaViewer(exerciseId: log.exerciseId) { showMediaViewer = false }
+                .environmentObject(exerciseStore)
         }
     }
 }
@@ -800,15 +744,12 @@ struct NewSessionView: View {
     func autosave() {
         let logs: [WorkoutLog] = entries.compactMap { d in
             guard !d.sets.isEmpty else { return nil }
-            let ex = exerciseStore.exercises.first { $0.id == d.exerciseId }
-            let imgDatas = (ex?.imageDatas ?? []).map { resizedData($0, maxDimension: 600) }
+            // Images are no longer snapshotted into logs — look them up from the Exercise on demand.
             return WorkoutLog(exerciseId: d.exerciseId, exerciseName: d.exerciseName,
                               muscleGroup: d.muscleGroup, date: sessionDate,
                               sets: d.sets.enumerated().map { i, s in
                                   WorkoutSet(setNumber: i+1, weight: s.weight, reps: s.reps, maxReps: s.maxReps)
                               },
-                              exerciseImageData: imgDatas.first,
-                              exerciseImageDatas: imgDatas,
                               rowNumber: d.rowNumber)
         }
         guard !logs.isEmpty else { return }
@@ -868,15 +809,11 @@ struct NewSessionView: View {
         autosaveTimer = nil
         let logs: [WorkoutLog] = entries.compactMap { d in
             guard !d.sets.isEmpty else { return nil }
-            let ex = exerciseStore.exercises.first { $0.id == d.exerciseId }
-            let imgDatas = (ex?.imageDatas ?? []).map { resizedData($0, maxDimension: 600) }
             return WorkoutLog(exerciseId: d.exerciseId, exerciseName: d.exerciseName,
                               muscleGroup: d.muscleGroup, date: sessionDate,
                               sets: d.sets.enumerated().map { i, s in
                                   WorkoutSet(setNumber: i+1, weight: s.weight, reps: s.reps, maxReps: s.maxReps)
                               },
-                              exerciseImageData: imgDatas.first,
-                              exerciseImageDatas: imgDatas,
                               rowNumber: d.rowNumber)
         }
         guard !logs.isEmpty else { dismiss(); return }
@@ -1812,5 +1749,109 @@ struct ExportHelper {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
         do { try data.write(to: url); return url }
         catch { return nil }
+    }
+}
+
+// MARK: - ExerciseMediaViewer
+// On-demand viewer for an exercise's photos and video. Reads downsampled
+// thumbnails from disk via ImageFileManager + streams video via AVPlayer —
+// so memory is only used while the viewer is open, and is released on dismiss.
+struct ExerciseMediaViewer: View {
+    let exerciseId: UUID
+    let onDismiss: () -> Void
+    @EnvironmentObject var exerciseStore: ExerciseStore
+
+    @State private var thumbs: [UIImage] = []
+    @State private var hasVideo: Bool = false
+    @State private var showVideoPlayer = false
+    @State private var currentIndex: Int = 0
+
+    private var exercise: Exercise? {
+        exerciseStore.exercises.first { $0.id == exerciseId }
+    }
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            VStack(spacing: 12) {
+                // Top bar
+                HStack {
+                    Text(exercise?.name ?? "")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundColor(.white)
+                        .lineLimit(1)
+                    Spacer()
+                    Button(action: onDismiss) {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 28))
+                            .foregroundColor(.white.opacity(0.75))
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 12)
+
+                // Photo pager
+                if !thumbs.isEmpty {
+                    TabView(selection: $currentIndex) {
+                        ForEach(Array(thumbs.enumerated()), id: \.offset) { idx, img in
+                            Image(uiImage: img)
+                                .resizable()
+                                .scaledToFit()
+                                .tag(idx)
+                        }
+                    }
+                    .tabViewStyle(.page(indexDisplayMode: thumbs.count > 1 ? .automatic : .never))
+                    .indexViewStyle(.page(backgroundDisplayMode: .always))
+                } else if !hasVideo {
+                    Spacer()
+                    Text("No media")
+                        .foregroundColor(.gray)
+                    Spacer()
+                } else {
+                    Spacer()
+                }
+
+                // Play video button
+                if hasVideo {
+                    Button(action: { showVideoPlayer = true }) {
+                        HStack(spacing: 8) {
+                            Image(systemName: "play.circle.fill")
+                                .font(.system(size: 22))
+                            Text("Play video")
+                                .font(.system(size: 15, weight: .semibold))
+                        }
+                        .foregroundColor(.white)
+                        .padding(.vertical, 12)
+                        .frame(maxWidth: .infinity)
+                        .background(Color.orange)
+                        .cornerRadius(12)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 24)
+                }
+            }
+        }
+        .onAppear { loadMedia() }
+        .fullScreenCover(isPresented: $showVideoPlayer) {
+            if let ex = exercise, let url = VideoFileManager.url(for: ex.localVideoFileName) {
+                VideoPlayerFullscreen(url: url) { showVideoPlayer = false }
+            }
+        }
+    }
+
+    /// Load downsampled thumbnails from disk on a background queue.
+    /// Called once when the viewer appears; memory is released on dismiss.
+    private func loadMedia() {
+        guard let ex = exercise else { return }
+        let exCopy = ex
+        DispatchQueue.global(qos: .userInitiated).async {
+            let imgs = exCopy.galleryThumbnails(maxPixelSize: 1400)
+            let haveVideo = !exCopy.localVideoFileName.isEmpty
+                && VideoFileManager.url(for: exCopy.localVideoFileName) != nil
+            DispatchQueue.main.async {
+                self.thumbs = imgs
+                self.hasVideo = haveVideo
+            }
+        }
     }
 }

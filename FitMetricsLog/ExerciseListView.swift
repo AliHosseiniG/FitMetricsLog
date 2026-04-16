@@ -310,9 +310,14 @@ struct ExerciseDetailView: View {
             Text(L(.historyKept))
         }
         .onAppear {
-            // Preload images once to avoid decoding on every render
+            // Preload gallery thumbnails once from disk files (downsampled, memory-friendly).
             if cachedImages.isEmpty {
-                cachedImages = live.imageDatas.compactMap { UIImage(data: $0) }
+                if !live.localImageFileNames.isEmpty {
+                    cachedImages = live.galleryThumbnails(maxPixelSize: 1200)
+                } else {
+                    // Legacy fallback
+                    cachedImages = live.imageDatas.compactMap { UIImage(data: $0) }
+                }
                 cachedFirstImage = cachedImages.first
             }
         }
@@ -522,7 +527,12 @@ struct ExerciseDetailView: View {
 
     func deleteImage(at index: Int) {
         var updated = live
-        updated.imageDatas.remove(at: index)
+        // Prefer new on-disk storage; fall back to legacy imageDatas.
+        if index < updated.localImageFileNames.count {
+            updated.localImageFileNames.remove(at: index)
+        } else if index < updated.imageDatas.count {
+            updated.imageDatas.remove(at: index)
+        }
         exerciseStore.update(updated)
     }
 }

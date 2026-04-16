@@ -428,17 +428,20 @@ struct PlanItemRow: View {
     @EnvironmentObject var exerciseStore: ExerciseStore
     let item: PlanExerciseItem
     let index: Int
-    @State private var fullscreenImageIndex: Int? = nil
-    @State private var showVideoPlayer = false
-    // Preloaded once on appear — avoids re-decoding on every body render
-    @State private var thumb: UIImage? = nil
-    @State private var galleryThumbs: [UIImage] = []
-    @State private var fullscreenThumbs: [UIImage] = []  // Larger thumbnails for fullscreen (1200px)
-    @State private var videoThumb: UIImage? = nil
-    @State private var hasVideo: Bool = false
+    @State private var showMediaViewer = false
 
     private var exercise: Exercise? {
         exerciseStore.exercises.first { $0.id == item.exerciseId }
+    }
+
+    /// True if the backing Exercise has any photos or a video on disk.
+    private var hasMedia: Bool {
+        guard let ex = exercise else { return false }
+        if !ex.localImageFileNames.isEmpty { return true }
+        if !ex.imageDatas.isEmpty { return true }
+        if !ex.localVideoFileName.isEmpty,
+           VideoFileManager.url(for: ex.localVideoFileName) != nil { return true }
+        return false
     }
 
     var body: some View {
@@ -448,22 +451,30 @@ struct PlanItemRow: View {
                     .font(.system(size: 14, weight: .bold)).foregroundColor(.orange)
                     .frame(width: 26, height: 26)
                     .background(Color.orange.opacity(0.12)).cornerRadius(8)
-                // Exercise photo or muscle icon
+                // Muscle group icon
                 ZStack {
                     RoundedRectangle(cornerRadius: 9)
                         .fill(item.muscleGroup.color.opacity(0.12))
                         .frame(width: 36, height: 36)
-                    if let img = thumb {
-                        Image(uiImage: img).resizable().scaledToFill()
-                            .frame(width: 36, height: 36).clipped().cornerRadius(9)
-                    } else {
-                        Image(systemName: item.muscleGroup.icon)
-                            .font(.system(size: 15)).foregroundColor(item.muscleGroup.color)
-                    }
+                    Image(systemName: item.muscleGroup.icon)
+                        .font(.system(size: 15)).foregroundColor(item.muscleGroup.color)
                 }
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(item.exerciseName)
-                        .font(.system(size: 13, weight: .semibold)).foregroundColor(.white)
+                    HStack(spacing: 6) {
+                        Text(item.exerciseName)
+                            .font(.system(size: 13, weight: .semibold)).foregroundColor(.white)
+                        // Media button — opens on-demand viewer
+                        if hasMedia {
+                            Button(action: { showMediaViewer = true }) {
+                                Image(systemName: "photo.on.rectangle")
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundColor(.blue.opacity(0.85))
+                                    .frame(width: 24, height: 20)
+                                    .background(Color.blue.opacity(0.12))
+                                    .cornerRadius(5)
+                            }
+                        }
+                    }
                     HStack(spacing: 10) {
                         Label("\(item.targetSets) sets", systemImage: "repeat")
                             .font(.system(size: 11)).foregroundColor(.gray)
@@ -477,77 +488,11 @@ struct PlanItemRow: View {
                 }
                 Spacer()
             }
-            // Exercise photos gallery — downsampled thumbnails
-            if !galleryThumbs.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(Array(galleryThumbs.enumerated()), id: \.offset) { idx, img in
-                            Image(uiImage: img).resizable().scaledToFill()
-                                .frame(width: galleryThumbs.count == 1 ? 200 : 110, height: 80)
-                                .clipped().cornerRadius(10)
-                                .onTapGesture(count: 2) { fullscreenImageIndex = idx }
-                        }
-                    }
-                }
-            }
-            // Exercise video thumbnail
-            if hasVideo {
-                Button(action: { showVideoPlayer = true }) {
-                    ZStack {
-                        if let vt = videoThumb {
-                            Image(uiImage: vt).resizable().scaledToFill()
-                                .frame(maxWidth: .infinity, maxHeight: 100).clipped().cornerRadius(10)
-                        } else {
-                            RoundedRectangle(cornerRadius: 10).fill(Color(hex: "2C2C2C"))
-                                .frame(maxWidth: .infinity, maxHeight: 100)
-                        }
-                        Image(systemName: "play.circle.fill")
-                            .font(.system(size: 32)).foregroundColor(.white.opacity(0.9))
-                            .shadow(color: .black.opacity(0.5), radius: 4)
-                    }
-                }
-            }
         }
         .padding(12).background(Color(hex: "1C1C1E")).cornerRadius(12)
-        .onAppear { preloadMedia() }
-        .fullScreenCover(item: Binding(
-            get: { fullscreenImageIndex.map { FullscreenImageWrapper(index: $0) } },
-            set: { fullscreenImageIndex = $0?.index }
-        )) { wrapper in
-            // Use cached fullscreen thumbnails (1200px) instead of full-resolution
-            if !fullscreenThumbs.isEmpty {
-                FullscreenImageViewer(
-                    images: fullscreenThumbs,
-                    startIndex: wrapper.index,
-                    onDismiss: { fullscreenImageIndex = nil }
-                )
-            }
-        }
-        .fullScreenCover(isPresented: $showVideoPlayer) {
-            if let ex = exercise, let url = VideoFileManager.url(for: ex.localVideoFileName) {
-                VideoPlayerFullscreen(url: url) { showVideoPlayer = false }
-            }
-        }
-    }
-
-    /// Preload thumbnails once when row appears — runs off main thread to avoid blocking
-    func preloadMedia() {
-        guard thumb == nil && galleryThumbs.isEmpty else { return }
-        let exCopy = exercise  // capture once
-        DispatchQueue.global(qos: .userInitiated).async {
-            let t = exCopy?.thumbnail(maxPixelSize: 200)
-            let gt = exCopy?.galleryThumbnails(maxPixelSize: 400) ?? []
-            let fst = exCopy?.galleryThumbnails(maxPixelSize: 1200) ?? []  // Larger for fullscreen
-            let fileName = exCopy?.localVideoFileName ?? ""
-            let haveVideo = !fileName.isEmpty && VideoFileManager.url(for: fileName) != nil
-            let vt: UIImage? = haveVideo ? VideoFileManager.thumbnail(for: fileName) : nil
-            DispatchQueue.main.async {
-                self.thumb = t
-                self.galleryThumbs = gt
-                self.fullscreenThumbs = fst
-                self.hasVideo = haveVideo
-                self.videoThumb = vt
-            }
+        .fullScreenCover(isPresented: $showMediaViewer) {
+            ExerciseMediaViewer(exerciseId: item.exerciseId) { showMediaViewer = false }
+                .environmentObject(exerciseStore)
         }
     }
 }
