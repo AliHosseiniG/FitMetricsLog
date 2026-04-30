@@ -6,6 +6,7 @@
 import SwiftUI
 import AudioToolbox
 import AVKit
+import UserNotifications
 
 // MARK: - Log Tab Root
 struct LogView: View {
@@ -565,8 +566,13 @@ struct NewSessionView: View {
     var existingSession:  WorkoutSession? = nil
 
     @State private var sessionDate     = Date()
-    @State private var durationMinutes = 60
+    @State private var endDate         = Date().addingTimeInterval(60 * 60)
     @State private var sessionNotes    = ""
+
+    /// Computed duration in minutes. Always ≥ 1.
+    private var computedDurationMinutes: Int {
+        max(1, Int((endDate.timeIntervalSince(sessionDate) / 60).rounded()))
+    }
     @State private var entries: [DraftLog] = []
 
     @State private var showingExPicker   = false
@@ -587,33 +593,42 @@ struct NewSessionView: View {
 
                 ScrollView(showsIndicators: false) {
                     VStack(spacing: 16) {
-                        // Date & Time
+                        // Start Time
                         HStack {
-                            Label(L(.tabLog) + " · " + "Zeit", systemImage: "calendar.clock")
+                            Label("Start", systemImage: "calendar.clock")
                                 .foregroundColor(.gray).font(.system(size: 14))
                             Spacer()
                             DatePicker("", selection: $sessionDate,
                                        displayedComponents: [.date, .hourAndMinute])
                                 .colorScheme(.dark).labelsHidden()
+                                .onChange(of: sessionDate) { newStart in
+                                    // Keep end after start
+                                    if endDate <= newStart {
+                                        endDate = newStart.addingTimeInterval(60 * 60)
+                                    }
+                                }
                         }
                         .padding(14).background(Color(hex: "1C1C1E")).cornerRadius(12)
 
-                        // Duration
+                        // End Time (duration auto-calculated)
+                        HStack {
+                            Label("End", systemImage: "flag.checkered")
+                                .foregroundColor(.gray).font(.system(size: 14))
+                            Spacer()
+                            DatePicker("", selection: $endDate,
+                                       in: sessionDate.addingTimeInterval(60)...,
+                                       displayedComponents: [.date, .hourAndMinute])
+                                .colorScheme(.dark).labelsHidden()
+                        }
+                        .padding(14).background(Color(hex: "1C1C1E")).cornerRadius(12)
+
+                        // Auto-calculated duration (read-only)
                         HStack {
                             Label(L(.duration), systemImage: "clock")
                                 .foregroundColor(.gray).font(.system(size: 14))
                             Spacer()
-                            HStack(spacing: 14) {
-                                Button(action: { if durationMinutes > 15 { durationMinutes -= 15 } }) {
-                                    Image(systemName: "minus.circle").foregroundColor(.orange)
-                                }
-                                Text("\(durationMinutes) min")
-                                    .font(.system(size: 15, weight: .semibold)).foregroundColor(.white)
-                                    .frame(width: 75, alignment: .center)
-                                Button(action: { durationMinutes += 15 }) {
-                                    Image(systemName: "plus.circle").foregroundColor(.orange)
-                                }
-                            }
+                            Text("\(computedDurationMinutes) min")
+                                .font(.system(size: 15, weight: .semibold)).foregroundColor(.orange)
                         }
                         .padding(14).background(Color(hex: "1C1C1E")).cornerRadius(12)
 
@@ -753,9 +768,10 @@ struct NewSessionView: View {
                               rowNumber: d.rowNumber)
         }
         guard !logs.isEmpty else { return }
+        let duration = computedDurationMinutes
         if let e = existingSession {
             var updated = e
-            updated.date = sessionDate; updated.durationMinutes = durationMinutes
+            updated.date = sessionDate; updated.endDate = endDate; updated.durationMinutes = duration
             updated.sessionNotes = sessionNotes; updated.logs = logs
             logStore.updateSession(updated)
         } else if let savedId = autosavedSessionId,
@@ -763,13 +779,13 @@ struct NewSessionView: View {
             // Update the previously autosaved new session
             var updated = WorkoutSession(date: sessionDate, logs: logs)
             updated.id = savedId
-            updated.durationMinutes = durationMinutes; updated.sessionNotes = sessionNotes
+            updated.endDate = endDate; updated.durationMinutes = duration; updated.sessionNotes = sessionNotes
             updated.sourcePlanId = prefillPlan?.id; updated.sourcePlanName = prefillPlan?.name
             logStore.updateSession(updated)
         } else {
             // First autosave for a new session
             var s = WorkoutSession(date: sessionDate, logs: logs)
-            s.durationMinutes = durationMinutes; s.sessionNotes = sessionNotes
+            s.endDate = endDate; s.durationMinutes = duration; s.sessionNotes = sessionNotes
             s.sourcePlanId = prefillPlan?.id; s.sourcePlanName = prefillPlan?.name
             logStore.addSession(s)
             autosavedSessionId = s.id
@@ -779,7 +795,10 @@ struct NewSessionView: View {
 
     func prefill() {
         if let s = existingSession {
-            sessionDate = s.date; durationMinutes = s.durationMinutes; sessionNotes = s.sessionNotes
+            sessionDate = s.date
+            // Prefer stored endDate; fall back to start + duration for legacy sessions
+            endDate = s.endDate ?? s.date.addingTimeInterval(TimeInterval(s.durationMinutes) * 60)
+            sessionNotes = s.sessionNotes
             entries = s.logs.map { log in
                 var d = DraftLog(exerciseId: log.exerciseId, exerciseName: log.exerciseName, muscleGroup: log.muscleGroup)
                 let savedMax = MaxRepsStore.get(for: log.exerciseId)
@@ -817,8 +836,9 @@ struct NewSessionView: View {
                               rowNumber: d.rowNumber)
         }
         guard !logs.isEmpty else { dismiss(); return }
+        let duration = computedDurationMinutes
         if var e = existingSession {
-            e.date = sessionDate; e.durationMinutes = durationMinutes
+            e.date = sessionDate; e.endDate = endDate; e.durationMinutes = duration
             e.sessionNotes = sessionNotes; e.logs = logs
             logStore.updateSession(e)
         } else if let savedId = autosavedSessionId,
@@ -826,12 +846,12 @@ struct NewSessionView: View {
             // Update the autosaved session instead of creating a new one
             var updated = WorkoutSession(date: sessionDate, logs: logs)
             updated.id = savedId
-            updated.durationMinutes = durationMinutes; updated.sessionNotes = sessionNotes
+            updated.endDate = endDate; updated.durationMinutes = duration; updated.sessionNotes = sessionNotes
             updated.sourcePlanId = prefillPlan?.id; updated.sourcePlanName = prefillPlan?.name
             logStore.updateSession(updated)
         } else {
             var s = WorkoutSession(date: sessionDate, logs: logs)
-            s.durationMinutes = durationMinutes; s.sessionNotes = sessionNotes
+            s.endDate = endDate; s.durationMinutes = duration; s.sessionNotes = sessionNotes
             s.sourcePlanId   = prefillPlan?.id
             s.sourcePlanName = prefillPlan?.name
             logStore.addSession(s)
@@ -888,12 +908,21 @@ struct DraftLog: Identifiable {
 
 
 // MARK: - Rest Timer Banner (between exercises in NewSessionView)
+// Wall-clock based: keeps counting accurately when the app is backgrounded or
+// the device is locked. A local notification is also scheduled so the alert
+// fires even if the app is not in the foreground.
 struct RestTimerBanner: View {
     @Binding var defaultSeconds: Int
     @State private var isRunning    = false
     @State private var remaining:   Int = 0
+    @State private var endDate:     Date? = nil           // wall-clock target
+    @State private var pausedRemaining: Int = 0           // saved when paused
     @State private var timer:       Timer? = nil
-    @State private var showPicker   = false
+    @State private var alarmTimer:  Timer? = nil
+    @State private var alarmCount:  Int = 0
+    @Environment(\.scenePhase) private var scenePhase
+
+    private static let notificationId = "FitMetrics.RestTimer"
 
     var progress: Double {
         guard defaultSeconds > 0 else { return 0 }
@@ -965,37 +994,113 @@ struct RestTimerBanner: View {
         .cornerRadius(12)
         .overlay(RoundedRectangle(cornerRadius: 12)
             .stroke(Color.orange.opacity(isRunning ? 0.35 : 0.1), lineWidth: 1))
+        .onChange(of: scenePhase) { newPhase in
+            if newPhase == .active && isRunning {
+                // App came back from background — recompute against wall clock
+                tick()
+            }
+        }
     }
 
     func start() {
-        if remaining == 0 { remaining = defaultSeconds }
+        // Resolve initial seconds — resume from paused or use default
+        let seconds: Int
+        if pausedRemaining > 0 {
+            seconds = pausedRemaining
+            pausedRemaining = 0
+        } else if remaining > 0 {
+            seconds = remaining
+        } else {
+            seconds = defaultSeconds
+        }
+        guard seconds > 0 else { return }
+        endDate = Date().addingTimeInterval(TimeInterval(seconds))
+        remaining = seconds
         isRunning = true
-        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
-            if remaining > 0 {
-                remaining -= 1
-            } else {
-                finish()
-            }
+        scheduleLocalNotification(in: seconds)
+        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in tick() }
+        // Request notification permission (no-op if already granted/denied)
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+    }
+
+    private func tick() {
+        guard let end = endDate else { return }
+        let secs = Int(ceil(end.timeIntervalSinceNow))
+        if secs > 0 {
+            remaining = secs
+        } else {
+            remaining = 0
+            finish()
         }
     }
 
     func pause() {
         isRunning = false
         timer?.invalidate(); timer = nil
+        if let end = endDate {
+            pausedRemaining = max(0, Int(ceil(end.timeIntervalSinceNow)))
+        }
+        endDate = nil
+        cancelLocalNotification()
     }
 
     func reset() {
-        pause(); remaining = 0
+        pause()
+        remaining = 0
+        pausedRemaining = 0
+        stopAlarm()
     }
 
     func finish() {
-        pause()
-        // Haptic + alert sound
+        timer?.invalidate(); timer = nil
+        isRunning = false
+        endDate = nil
+        cancelLocalNotification()      // already fired (if backgrounded)
+        // Foreground alarm: longer, repeating beeps so it can't be missed
+        startAlarm()
+        remaining = 0
+    }
+
+    // MARK: Alarm — repeats system sound several times so the alert is clearly audible
+    private func startAlarm() {
+        stopAlarm()
+        alarmCount = 0
         let generator = UINotificationFeedbackGenerator()
         generator.notificationOccurred(.success)
-        // System sound
         AudioServicesPlaySystemSound(1005)
-        remaining = 0
+        alarmTimer = Timer.scheduledTimer(withTimeInterval: 0.65, repeats: true) { t in
+            alarmCount += 1
+            if alarmCount >= 6 {       // ~4 seconds of repeated beeps
+                t.invalidate()
+                alarmTimer = nil
+                return
+            }
+            AudioServicesPlaySystemSound(1005)
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        }
+    }
+
+    private func stopAlarm() {
+        alarmTimer?.invalidate(); alarmTimer = nil
+        alarmCount = 0
+    }
+
+    // MARK: Local notification — fires the alert even if app is backgrounded/locked
+    private func scheduleLocalNotification(in seconds: Int) {
+        cancelLocalNotification()
+        guard seconds > 0 else { return }
+        let content = UNMutableNotificationContent()
+        content.title = "Rest finished"
+        content.body  = "Time to start your next set."
+        content.sound = .defaultCritical
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: TimeInterval(seconds), repeats: false)
+        let request = UNNotificationRequest(identifier: Self.notificationId, content: content, trigger: trigger)
+        UNUserNotificationCenter.current().add(request) { _ in }
+    }
+
+    private func cancelLocalNotification() {
+        UNUserNotificationCenter.current()
+            .removePendingNotificationRequests(withIdentifiers: [Self.notificationId])
     }
 }
 
@@ -1046,10 +1151,17 @@ struct DraftLogCard: View {
                         .frame(width: 110).padding(.vertical, 6)
                         .background(Color.white.opacity(0.06)).cornerRadius(8)
                     Spacer()
-                    HStack(spacing: 8) {
+                    HStack(spacing: 4) {
                         Button(action: { if entry.sets[idx].reps > 1 { entry.sets[idx].reps -= 1 } }) {
-                            Image(systemName: "minus").font(.system(size: 10)).foregroundColor(.orange)
+                            Image(systemName: "minus")
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundColor(.orange)
+                                .frame(width: 36, height: 36)
+                                .background(Color.orange.opacity(0.12))
+                                .clipShape(Circle())
+                                .contentShape(Circle())
                         }
+                        .buttonStyle(.plain)
                         VStack(spacing: 1) {
                             Text("\(entry.sets[idx].reps)")
                                 .font(.system(size: 14, weight: .semibold)).foregroundColor(.white).frame(width: 26)
@@ -1064,10 +1176,16 @@ struct DraftLogCard: View {
                                 entry.sets[idx].reps += 1
                             }
                         }) {
-                            Image(systemName: "plus").font(.system(size: 10))
+                            Image(systemName: "plus")
+                                .font(.system(size: 12, weight: .bold))
                                 .foregroundColor(entry.sets[idx].maxReps > 0 && entry.sets[idx].reps >= entry.sets[idx].maxReps ? .gray : .orange)
+                                .frame(width: 36, height: 36)
+                                .background((entry.sets[idx].maxReps > 0 && entry.sets[idx].reps >= entry.sets[idx].maxReps ? Color.gray : Color.orange).opacity(0.12))
+                                .clipShape(Circle())
+                                .contentShape(Circle())
                         }
-                    }.frame(width: 80, alignment: .trailing)
+                        .buttonStyle(.plain)
+                    }.frame(width: 116, alignment: .trailing)
                 }
             }
 
@@ -1682,7 +1800,7 @@ struct ExportHelper {
             UIRectFill(CGRect(x: margin, y: y, width: pageW - 2*margin, height: 2))
             y += 14
 
-            for session in sessions.sorted(by: { $0.date < $1.date }) {
+            for session in sessions.sorted(by: { $0.date > $1.date }) {
                 newPageIfNeeded(requiredHeight: 60)
 
                 // Session header — light gray box

@@ -67,6 +67,9 @@ struct WorkoutSession: Identifiable, Codable {
     var logs:             [WorkoutLog]
     var sessionNotes:     String = ""
     var durationMinutes:  Int    = 60
+    /// End time of the session. Duration is calculated as endDate - date.
+    /// Optional for backward compatibility with sessions saved before this field existed.
+    var endDate:          Date?  = nil
     // Plan reference — kept in sync when plan is renamed
     var sourcePlanId:     UUID?   = nil
     var sourcePlanName:   String? = nil
